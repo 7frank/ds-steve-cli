@@ -233,5 +233,100 @@ def setup_env():
         click.echo(f"   💡 Run: {click.style(f'source {out_file.name}', fg='yellow')}")
 
 
+def _detect_workspaces() -> List[str]:
+    tiers = {"BRONZE", "SILVER", "GOLD"}
+    workspaces = set()
+    for key in os.environ:
+        if key.endswith("_ACCESS_KEY"):
+            prefix = key[: -len("_ACCESS_KEY")]
+            if prefix not in tiers:
+                workspaces.add(prefix)
+    return sorted(workspaces)
+
+
+def _build_tree(keys: List[str]) -> Dict[str, Any]:
+    tree: Dict[str, Any] = {}
+    for key in keys:
+        parts = key.split("/")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = None
+    return tree
+
+
+def _print_tree(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
+    items = sorted(node.items())
+    for i, (name, child) in enumerate(items):
+        last = i == len(items) - 1
+        connector = "└── " if last else "├── "
+        click.echo(f"{prefix}{connector}{name}")
+        if child is not None:
+            extension = "    " if last else "│   "
+            _print_tree(child, prefix + extension, last)
+
+
+def _list_bucket(storage_kwargs: dict, label: str, bucket_name: str) -> None:
+    click.echo(f"  {click.style(label, fg='cyan')} ({bucket_name})")
+    try:
+        from steve_cli.storage import S3Storage
+        storage = S3Storage(**storage_kwargs)
+        keys = storage.list_all()
+        if not keys:
+            click.echo("    (empty)")
+        else:
+            tree = _build_tree(keys)
+            _print_tree(tree, prefix="    ")
+    except EnvironmentError as e:
+        click.echo(f"    ⚠️  {e}", err=True)
+    except Exception as e:
+        click.echo(f"    ❌ {e}", err=True)
+
+
+@main.command("buckets")
+def buckets():
+    """List all S3 buckets detected from env variables and show their files as a tree."""
+    tiers = ["bronze", "silver", "gold"]
+
+    options: List[Dict[str, Any]] = []
+
+    bare_tiers = [t for t in tiers if os.getenv(f"{t.upper()}_ACCESS_KEY")]
+    for tier in bare_tiers:
+        bucket_name = os.getenv(f"{tier.upper()}_BUCKET", "")
+        options.append({
+            "label": f"default / {tier} ({bucket_name})",
+            "kwargs": {"tier": tier},
+            "bucket_name": bucket_name,
+            "tier": tier,
+        })
+
+    for ws in _detect_workspaces():
+        for tier in tiers:
+            bucket_name = os.getenv(f"{ws}_BUCKET_{tier.upper()}")
+            if not bucket_name:
+                continue
+            options.append({
+                "label": f"{ws} / {tier} ({bucket_name})",
+                "kwargs": {"tier": tier, "workspace": ws.lower().replace("_", "-")},
+                "bucket_name": bucket_name,
+                "tier": tier,
+            })
+
+    if not options:
+        click.echo("No bucket env variables found (expected: BRONZE_ACCESS_KEY or {WORKSPACE}_ACCESS_KEY).")
+        return
+
+    choice = questionary.select(
+        "Select a bucket to list:",
+        choices=[o["label"] for o in options],
+    ).ask()
+
+    if choice is None:
+        sys.exit(0)
+
+    selected = next(o for o in options if o["label"] == choice)
+    _list_bucket(selected["kwargs"], selected["tier"], selected["bucket_name"])
+
+
 if __name__ == '__main__':
     main()

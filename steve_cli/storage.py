@@ -161,6 +161,14 @@ class S3Storage:
             for obj in resp.get("Contents", [])
         ]
 
+    def list_all(self) -> List[str]:
+        keys = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+        return keys
+
 
 def get_storage(tier: str = "bronze", workspace: str | None = None) -> Storage:
     return S3Storage(tier=tier, workspace=workspace)
