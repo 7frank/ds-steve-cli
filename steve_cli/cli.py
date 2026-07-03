@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 import click
+import questionary
 import yaml
 
 
@@ -96,10 +97,29 @@ def main():
     pass
 
 
-@main.group()
-def jobs():
+@main.group(invoke_without_command=True)
+@click.option('--jobs-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to jobs.yaml file (default: ./jobs.yaml)')
+@click.pass_context
+def jobs(ctx: click.Context, jobs_file: Optional[Path]):
     """Manage and run jobs from jobs.yaml."""
-    pass
+    if ctx.invoked_subcommand is not None:
+        return
+    config = JobsConfig(jobs_file)
+    job_names = config.list_jobs()
+    if not job_names:
+        click.echo("❌ No jobs found in jobs.yaml")
+        return
+    click.echo(ctx.get_help())
+    click.echo()
+    choice = questionary.select(
+        "Select a job to run:",
+        choices=job_names,
+    ).ask()
+    if choice is None:
+        sys.exit(0)
+    job = config.get_job(choice)
+    sys.exit(run_job_command(job))
 
 
 @jobs.command('ls')

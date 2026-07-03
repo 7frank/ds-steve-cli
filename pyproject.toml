@@ -1,4 +1,8 @@
 
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "steve-cli"
 version = "0.2.0"
@@ -22,6 +26,7 @@ dependencies = [
     "boto3>=1.37.38",
     "click>=8.0.0",
     "pyyaml>=6.0",
+    "questionary>=2.0.0",
 ]
 
 [project.optional-dependencies]

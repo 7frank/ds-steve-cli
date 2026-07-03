@@ -1,30 +1,26 @@
 jobs:
-  # Daily data extraction job
   - name: extract-data
-    cron: "0 2 * * *"  # Every day at 2 AM
-    command: ["python", "extract.py"]
+    cron: "0 2 * * *"
+    command: ["echo", "Extracting data from $SOURCE_URL in batches of $BATCH_SIZE"]
     env:
       SOURCE_URL: "https://api.example.com/data"
       BATCH_SIZE: "1000"
-    
-  # Data transformation job (depends on extract-data)
+
   - name: transform-data
     dependsOn: ["extract-data"]
-    command: ["python", "transform.py"]
+    command: ["echo", "Transforming data from $INPUT_PATH to $OUTPUT_PATH"]
     env:
       INPUT_PATH: "/data/raw"
       OUTPUT_PATH: "/data/processed"
-      
-  # Data validation job (depends on transform-data)
+
   - name: validate-data
     dependsOn: ["transform-data"]
-    command: ["python", "validate.py"]
+    command: ["echo", "Validating data at $DATA_PATH"]
     env:
       DATA_PATH: "/data/processed"
-      
-  # Weekly cleanup job
+
   - name: cleanup-old-data
-    cron: "0 0 * * 0"  # Every Sunday at midnight
-    command: ["python", "cleanup.py"]
+    cron: "0 0 * * 0"
+    command: ["echo", "Cleaning up data older than $RETENTION_DAYS days"]
     env:
       RETENTION_DAYS: "30"
