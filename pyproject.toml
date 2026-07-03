@@ -1,6 +1,3 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
 
 [project]
 name = "steve-cli"
@@ -8,7 +5,7 @@ version = "0.1.0"
 description = "A simple CLI tool to run jobs from jobs.yaml with proper environment setup"
 readme = "README.md"
 license = {text = "MIT"}
-authors = [{name = "Frank", email = "frank@example.com"}]
+authors = [{name = "Frank"}]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,12 +34,10 @@ dev = [
 steve = "steve_cli.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/tilt-ts-4"
-Repository = "https://github.com/your-org/tilt-ts-4"
+Homepage = "https://github.com/7frank/ds-steve-cli"
+Repository = "https://github.com/7frank/ds-steve-cli"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["steve_cli*"]
+
 
 [tool.black]
 line-length = 88

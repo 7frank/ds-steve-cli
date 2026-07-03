@@ -14,9 +14,15 @@ uv pip install -e .
 
 ### Install from GitHub
 
+`uv add steve-cli` 
+
+OR
+
 ```bash
 uv add git+https://github.com/your-org/tilt-ts-4.git#subdirectory=apps/example-hehnke/packages/steve-cli
 ```
+
+
 
 ## Usage
 
@@ -24,11 +30,12 @@ uv add git+https://github.com/your-org/tilt-ts-4.git#subdirectory=apps/example-h
 
 ```bash
 steve extract-data
-steve transform-data  
+steve transform-data
 steve validate-data
 ```
 
 This will:
+
 1. Look for `jobs.yaml` in the current directory
 2. Find the specified job by name
 3. Set all environment variables from the job's `env` section
@@ -68,7 +75,7 @@ jobs:
     env:
       SOURCE_URL: "https://jsonplaceholder.typicode.com/users"
       OUTPUT_PATH: "/data/raw/extracted_data.parquet"
-  
+
   - name: transform-data
     dependsOn: ["extract-data"]
     command: ["uv", "run", "src/transform.py"]
@@ -78,6 +85,7 @@ jobs:
 ```
 
 Running `steve extract-data` will:
+
 1. Set `SOURCE_URL=https://jsonplaceholder.typicode.com/users`
 2. Set `OUTPUT_PATH=/data/raw/extracted_data.parquet`
 3. Execute: `uv run src/extract.py`
@@ -115,3 +123,8 @@ pytest
 black steve_cli/
 isort steve_cli/
 ```
+
+#
+
+uv build
+uv publish
