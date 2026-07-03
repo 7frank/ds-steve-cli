@@ -1,26 +1,26 @@
 jobs:
   - name: extract-data
     cron: "0 2 * * *"
-    command: ["echo", "Extracting data from $SOURCE_URL in batches of $BATCH_SIZE"]
+    command: ["sh", "-c", "echo Extracting data from $SOURCE_URL in batches of $BATCH_SIZE"]
     env:
       SOURCE_URL: "https://api.example.com/data"
       BATCH_SIZE: "1000"
 
   - name: transform-data
     dependsOn: ["extract-data"]
-    command: ["echo", "Transforming data from $INPUT_PATH to $OUTPUT_PATH"]
+    command: ["sh", "-c", "echo Transforming data from $INPUT_PATH to $OUTPUT_PATH"]
     env:
       INPUT_PATH: "/data/raw"
       OUTPUT_PATH: "/data/processed"
 
   - name: validate-data
     dependsOn: ["transform-data"]
-    command: ["echo", "Validating data at $DATA_PATH"]
+    command: ["sh", "-c", "echo Validating data at $DATA_PATH"]
     env:
       DATA_PATH: "/data/processed"
 
   - name: cleanup-old-data
     cron: "0 0 * * 0"
-    command: ["echo", "Cleaning up data older than $RETENTION_DAYS days"]
+    command: ["sh", "-c", "echo Cleaning up data older than $RETENTION_DAYS days"]
     env:
       RETENTION_DAYS: "30"

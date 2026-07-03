@@ -16,32 +16,40 @@ class Storage(Protocol):
 
 
 class S3Storage:
-    def __init__(self, tier: str = "bronze"):
+    def __init__(self, tier: str = "bronze", workspace: str | None = None):
         self.tier = tier.lower()
 
-        if self.tier == "bronze":
-            access_key = os.getenv("BRONZE_ACCESS_KEY")
-            secret_key = os.getenv("BRONZE_SECRET_KEY")
-            self.bucket = os.getenv("BRONZE_BUCKET")
-            required_vars = ["BRONZE_ACCESS_KEY", "BRONZE_SECRET_KEY", "BRONZE_BUCKET"]
-        elif self.tier == "silver":
-            access_key = os.getenv("SILVER_ACCESS_KEY")
-            secret_key = os.getenv("SILVER_SECRET_KEY")
-            self.bucket = os.getenv("SILVER_BUCKET")
-            required_vars = ["SILVER_ACCESS_KEY", "SILVER_SECRET_KEY", "SILVER_BUCKET"]
+        if workspace is not None:
+            prefix = workspace.upper().replace("-", "_")
+            tier_suffix = f"BUCKET_{tier.upper()}"
+            access_key = os.getenv(f"{prefix}_ACCESS_KEY")
+            secret_key = os.getenv(f"{prefix}_SECRET_KEY")
+            self.bucket = os.getenv(f"{prefix}_{tier_suffix}")
+            required_vars = [f"{prefix}_ACCESS_KEY", f"{prefix}_SECRET_KEY", f"{prefix}_{tier_suffix}"]
+            endpoint = os.getenv(f"{prefix}_S3_ENDPOINT", os.getenv("S3_ENDPOINT", "http://localhost:9000"))
         else:
-            access_key = os.getenv("GOLD_ACCESS_KEY")
-            secret_key = os.getenv("GOLD_SECRET_KEY")
-            self.bucket = os.getenv("GOLD_BUCKET")
-            required_vars = ["GOLD_ACCESS_KEY", "GOLD_SECRET_KEY", "GOLD_BUCKET"]
+            if self.tier == "bronze":
+                access_key = os.getenv("BRONZE_ACCESS_KEY")
+                secret_key = os.getenv("BRONZE_SECRET_KEY")
+                self.bucket = os.getenv("BRONZE_BUCKET")
+                required_vars = ["BRONZE_ACCESS_KEY", "BRONZE_SECRET_KEY", "BRONZE_BUCKET"]
+            elif self.tier == "silver":
+                access_key = os.getenv("SILVER_ACCESS_KEY")
+                secret_key = os.getenv("SILVER_SECRET_KEY")
+                self.bucket = os.getenv("SILVER_BUCKET")
+                required_vars = ["SILVER_ACCESS_KEY", "SILVER_SECRET_KEY", "SILVER_BUCKET"]
+            else:
+                access_key = os.getenv("GOLD_ACCESS_KEY")
+                secret_key = os.getenv("GOLD_SECRET_KEY")
+                self.bucket = os.getenv("GOLD_BUCKET")
+                required_vars = ["GOLD_ACCESS_KEY", "GOLD_SECRET_KEY", "GOLD_BUCKET"]
+            endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
 
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         if missing_vars:
             raise EnvironmentError(
                 f"Missing required environment variables for {self.tier} tier: {', '.join(missing_vars)}"
             )
-
-        endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
 
         self.client = boto3.client(
             "s3",
@@ -154,5 +162,5 @@ class S3Storage:
         ]
 
 
-def get_storage(tier: str = "bronze") -> Storage:
-    return S3Storage(tier=tier)
+def get_storage(tier: str = "bronze", workspace: str | None = None) -> Storage:
+    return S3Storage(tier=tier, workspace=workspace)
