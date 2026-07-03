@@ -124,6 +124,12 @@ black steve_cli/
 isort steve_cli/
 ```
 
+
+
+# use cli
+source .venv/bin/activate 
+steve
+
 #
 
 uv build

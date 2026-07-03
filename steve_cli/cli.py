@@ -164,8 +164,8 @@ def setup():
     pass
 
 
-@setup.command("all")
-def setup_all():
+@setup.command("env")
+def setup_env():
     """Decrypt SOPS-encoded .env files in current directory and write plaintext .env files."""
     cwd = Path.cwd()
     found: List[Path] = []

@@ -1,0 +1,158 @@
+import os
+from typing import Protocol, List
+from pathlib import PurePosixPath
+import sys
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError, EndpointConnectionError
+
+
+class Storage(Protocol):
+    def put_file(self, local_path: str, path: str) -> None: ...
+    def get_file(self, path: str, local_path: str) -> None: ...
+    def put_bytes(self, data: bytes, path: str) -> None: ...
+    def get_bytes(self, path: str) -> bytes: ...
+    def list(self, prefix: str = "") -> List[str]: ...
+
+
+class S3Storage:
+    def __init__(self, tier: str = "bronze"):
+        self.tier = tier.lower()
+
+        if self.tier == "bronze":
+            access_key = os.getenv("BRONZE_ACCESS_KEY")
+            secret_key = os.getenv("BRONZE_SECRET_KEY")
+            self.bucket = os.getenv("BRONZE_BUCKET")
+            required_vars = ["BRONZE_ACCESS_KEY", "BRONZE_SECRET_KEY", "BRONZE_BUCKET"]
+        elif self.tier == "silver":
+            access_key = os.getenv("SILVER_ACCESS_KEY")
+            secret_key = os.getenv("SILVER_SECRET_KEY")
+            self.bucket = os.getenv("SILVER_BUCKET")
+            required_vars = ["SILVER_ACCESS_KEY", "SILVER_SECRET_KEY", "SILVER_BUCKET"]
+        else:
+            access_key = os.getenv("GOLD_ACCESS_KEY")
+            secret_key = os.getenv("GOLD_SECRET_KEY")
+            self.bucket = os.getenv("GOLD_BUCKET")
+            required_vars = ["GOLD_ACCESS_KEY", "GOLD_SECRET_KEY", "GOLD_BUCKET"]
+
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            raise EnvironmentError(
+                f"Missing required environment variables for {self.tier} tier: {', '.join(missing_vars)}"
+            )
+
+        endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
+
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+            region_name="us-east-1",
+        )
+        
+        self.endpoint = endpoint
+
+    def _key(self, path: str) -> str:
+        return str(PurePosixPath(path).as_posix().lstrip("/"))
+    
+    def _get_absolute_url(self, path: str) -> str:
+        key = self._key(path)
+        return f"{self.endpoint}/{self.bucket}/{key}"
+
+    def put_file(self, local_path: str, path: str) -> None:
+        absolute_url = self._get_absolute_url(path)
+        try:
+            self.client.upload_file(local_path, self.bucket, self._key(path))
+            print(f"🔗 File uploaded to: {absolute_url}")
+        except EndpointConnectionError:
+            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
+            sys.exit(1)
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'AccessDenied':
+                print(f"❌ Access denied when uploading to: {path}", file=sys.stderr)
+            elif error_code == 'NoSuchBucket':
+                print(f"❌ Bucket not found: {self.bucket}", file=sys.stderr)
+            else:
+                print(f"❌ Storage error when uploading to: {path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def get_file(self, path: str, local_path: str) -> None:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        absolute_url = self._get_absolute_url(path)
+        try:
+            self.client.download_file(self.bucket, self._key(path), local_path)
+            print(f"📥 File downloaded from: {absolute_url}")
+        except EndpointConnectionError:
+            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
+            sys.exit(1)
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'NoSuchKey':
+                print(f"❌ File not found: {path}", file=sys.stderr)
+            elif error_code == 'AccessDenied':
+                print(f"❌ Access denied when reading: {path}", file=sys.stderr)
+            else:
+                print(f"❌ Storage error when reading: {path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def put_bytes(self, data: bytes, path: str) -> None:
+        absolute_url = self._get_absolute_url(path)
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._key(path),
+                Body=data
+            )
+            print(f"💾 Data stored at: {absolute_url}")
+        except EndpointConnectionError:
+            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
+            sys.exit(1)
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'AccessDenied':
+                print(f"❌ Access denied when writing to: {path}", file=sys.stderr)
+            elif error_code == 'NoSuchBucket':
+                print(f"❌ Bucket not found: {self.bucket}", file=sys.stderr)
+            else:
+                print(f"❌ Storage error when writing to: {path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def get_bytes(self, path: str) -> bytes:
+        absolute_url = self._get_absolute_url(path)
+        try:
+            obj = self.client.get_object(
+                Bucket=self.bucket,
+                Key=self._key(path)
+            )
+            print(f"📥 Data retrieved from: {absolute_url}")
+            return obj["Body"].read()
+        except EndpointConnectionError:
+            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
+            sys.exit(1)
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'NoSuchKey':
+                print(f"❌ File not found: {path}", file=sys.stderr)
+            elif error_code == 'AccessDenied':
+                print(f"❌ Access denied when reading: {path}", file=sys.stderr)
+            else:
+                print(f"❌ Storage error when reading: {path}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def list(self, prefix: str = "") -> List[str]:
+        resp = self.client.list_objects_v2(
+            Bucket=self.bucket,
+            Prefix=self._key(prefix)
+        )
+
+        return [
+            obj["Key"]
+            for obj in resp.get("Contents", [])
+        ]
+
+
+def get_storage(tier: str = "bronze") -> Storage:
+    return S3Storage(tier=tier)

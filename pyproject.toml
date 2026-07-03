@@ -1,7 +1,7 @@
 
 [project]
 name = "steve-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple CLI tool to run jobs from jobs.yaml with proper environment setup"
 readme = "README.md"
 license = {text = "MIT"}
@@ -19,6 +19,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
+    "boto3>=1.37.38",
     "click>=8.0.0",
     "pyyaml>=6.0",
 ]
@@ -29,6 +30,14 @@ dev = [
     "black>=22.0",
     "isort>=5.0",
 ]
+polars = [
+    "polars>=1.8.2",
+    "pyarrow>=17.0.0",
+]
+pandas = [
+    "pandas>=2.0.3",
+    "pyarrow>=17.0.0",
+]
 
 [project.scripts]
 steve = "steve_cli.cli:main"
@@ -38,6 +47,10 @@ Homepage = "https://github.com/7frank/ds-steve-cli"
 Repository = "https://github.com/7frank/ds-steve-cli"
 
 
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["steve_cli*"]
 
 [tool.black]
 line-length = 88
