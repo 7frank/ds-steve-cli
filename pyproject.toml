@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "steve-cli"
-version = "0.3.2"
+version = "0.3.4"
 description = "A simple CLI tool to run jobs from jobs.yaml with proper environment setup"
 readme = "README.md"
 license = {text = "MIT"}

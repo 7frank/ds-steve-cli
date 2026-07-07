@@ -9,8 +9,11 @@ Usage:
 """
 
 import os
+import signal
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -110,8 +113,6 @@ def jobs(ctx: click.Context, jobs_file: Optional[Path]):
     if not job_names:
         click.echo("❌ No jobs found in jobs.yaml")
         return
-    click.echo(ctx.get_help())
-    click.echo()
     choice = questionary.select(
         "Select a job to run:",
         choices=job_names,
@@ -175,6 +176,256 @@ def jobs_run(job_name: str, jobs_file: Optional[Path]):
     sys.exit(run_job_command(job))
 
 
+APPS_DIR = Path.home() / ".steve" / "apps"
+AUTH_PROXY_INTERNAL_URL = "http://auth-proxy-service"
+
+
+class AppsConfig:
+    def __init__(self, apps_file: Optional[Path] = None):
+        self.apps_file = apps_file or Path.cwd() / "apps.yaml"
+        self.apps: List[Dict[str, Any]] = []
+        self._load_apps()
+
+    def _load_apps(self) -> None:
+        try:
+            if not self.apps_file.exists():
+                click.echo(f"❌ Error: apps.yaml not found at {self.apps_file}", err=True)
+                click.echo("Make sure you're in a directory with an apps.yaml file", err=True)
+                sys.exit(1)
+
+            with open(self.apps_file, 'r') as f:
+                data = yaml.safe_load(f)
+
+            if not data or 'apps' not in data:
+                click.echo("❌ Error: Invalid apps.yaml format. Expected 'apps' key at root", err=True)
+                sys.exit(1)
+
+            self.apps = data['apps']
+
+        except yaml.YAMLError as e:
+            click.echo(f"❌ Error parsing apps.yaml: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"❌ Error reading apps.yaml: {e}", err=True)
+            sys.exit(1)
+
+    def get_app(self, app_name: str) -> Optional[Dict[str, Any]]:
+        for app in self.apps:
+            if app.get('name') == app_name:
+                return app
+        return None
+
+    def list_apps(self) -> List[str]:
+        return [app.get('name', 'unnamed') for app in self.apps]
+
+
+def _get_session_name() -> Optional[str]:
+    return os.environ.get('SESSION_NAME') or socket.gethostname()
+
+
+def _pid_file(app_name: str) -> Path:
+    return APPS_DIR / f"{app_name}.pid"
+
+
+def _get_running_pid(app_name: str) -> Optional[int]:
+    pf = _pid_file(app_name)
+    if not pf.exists():
+        return None
+    try:
+        pid = int(pf.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, OSError):
+        pf.unlink(missing_ok=True)
+        return None
+
+
+def _register_app(session_name: str, app_name: str, port: int) -> Optional[Dict[str, Any]]:
+    import urllib.request
+    import json
+    url = f"{AUTH_PROXY_INTERNAL_URL}/api/internal/register-app"
+    payload = json.dumps({"sessionName": session_name, "appName": app_name, "port": port}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        click.echo(f"⚠️  Failed to register app with auth-proxy: {e}", err=True)
+        return None
+
+
+def _deregister_app(session_name: str, app_name: str) -> None:
+    import urllib.request
+    import json
+    url = f"{AUTH_PROXY_INTERNAL_URL}/api/internal/register-app"
+    payload = json.dumps({"sessionName": session_name, "appName": app_name}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="DELETE")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+@main.group(invoke_without_command=True)
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+@click.pass_context
+def apps(ctx: click.Context, apps_file: Optional[Path]):
+    """Manage and run apps from apps.yaml inside the terminal."""
+    if ctx.invoked_subcommand is not None:
+        return
+    config = AppsConfig(apps_file)
+    app_names = config.list_apps()
+    if not app_names:
+        click.echo("❌ No apps found in apps.yaml")
+        return
+    choice = questionary.select(
+        "Select an app to start:",
+        choices=app_names,
+    ).ask()
+    if choice is None:
+        sys.exit(0)
+    app_def = config.get_app(choice)
+    ctx.invoke(apps_start, app_name=choice, apps_file=apps_file)
+
+
+@apps.command('ls')
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+def apps_list(apps_file: Optional[Path]):
+    """List all available apps."""
+    config = AppsConfig(apps_file)
+    if not config.apps:
+        click.echo("❌ No apps found in apps.yaml")
+        return
+
+    click.echo(f"📋 Available apps in {click.style(str(config.apps_file), fg='cyan')}:")
+    click.echo()
+
+    for app_data in config.apps:
+        name = app_data.get('name', 'unnamed')
+        command = app_data.get('command', [])
+        port = app_data.get('port', '?')
+        env_vars = app_data.get('env', {})
+        pid = _get_running_pid(name)
+        status = click.style('● running', fg='green') if pid else click.style('○ stopped', fg='yellow')
+
+        click.echo(f"  {click.style(name, fg='blue', bold=True)}  {status}")
+        if command:
+            click.echo(f"    Command: {click.style(' '.join(command), fg='cyan')}")
+        click.echo(f"    Port: {click.style(str(port), fg='magenta')}")
+        if env_vars:
+            click.echo(f"    Environment: {click.style(f'{len(env_vars)} variables', fg='green')}")
+        click.echo()
+
+
+@apps.command('start')
+@click.argument('app_name')
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+def apps_start(app_name: str, apps_file: Optional[Path]):
+    """Start an app by name and register it with the auth-proxy."""
+    config = AppsConfig(apps_file)
+    app_def = config.get_app(app_name)
+    if not app_def:
+        available = config.list_apps()
+        click.echo(f"❌ Error: App '{app_name}' not found", err=True)
+        if available:
+            click.echo(f"Available apps: {', '.join(available)}", err=True)
+        sys.exit(1)
+
+    session_name = _get_session_name()
+    if not session_name:
+        click.echo("❌ Error: SESSION_NAME environment variable not set. Are you running inside the terminal?", err=True)
+        sys.exit(1)
+
+    existing_pid = _get_running_pid(app_name)
+    if existing_pid:
+        click.echo(f"⚠️  App '{app_name}' is already running (PID {existing_pid})")
+        return
+
+    command = app_def.get('command', [])
+    port = app_def.get('port')
+    env_vars = app_def.get('env', {})
+
+    if not command:
+        click.echo(f"❌ Error: No command specified for app '{app_name}'", err=True)
+        sys.exit(1)
+    if not port:
+        click.echo(f"❌ Error: No port specified for app '{app_name}'", err=True)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    for key, value in env_vars.items():
+        env[key] = str(value)
+
+    APPS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = APPS_DIR / f"{app_name}.log"
+
+    click.echo(f"🚀 Starting app: {click.style(app_name, fg='blue', bold=True)}")
+    click.echo(f"📝 Command: {click.style(' '.join(command), fg='cyan')}")
+    click.echo(f"🔌 Port: {click.style(str(port), fg='magenta')}")
+
+    app_cwd = config.apps_file.parent
+    with open(log_file, 'a') as lf:
+        proc = subprocess.Popen(command, env=env, cwd=app_cwd, stdout=lf, stderr=lf)
+
+    time.sleep(1)
+    if proc.poll() is not None:
+        click.echo(f"❌ App '{app_name}' exited immediately (code {proc.returncode})", err=True)
+        click.echo(f"📄 Last log output:", err=True)
+        try:
+            with open(log_file) as lf:
+                click.echo(lf.read(), err=True)
+        except Exception:
+            pass
+        sys.exit(1)
+
+    _pid_file(app_name).write_text(str(proc.pid))
+
+    result = _register_app(session_name, app_name, port)
+
+    if result:
+        click.echo(f"✅ App started (PID {proc.pid}) and registered with auth-proxy")
+        public_url = result.get('url')
+    else:
+        click.echo(f"✅ App started (PID {proc.pid}), but registration with auth-proxy failed")
+        public_url = None
+
+    if public_url:
+        click.echo(f"🌐 Access at: {click.style(public_url, fg='cyan')}")
+    else:
+        click.echo(f"🌐 Access at (local): {click.style(f'http://localhost:{port}', fg='yellow')}")
+
+    click.echo(f"📄 Logs: {click.style(str(log_file), fg='yellow')}")
+
+
+@apps.command('stop')
+@click.argument('app_name')
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+def apps_stop(app_name: str, apps_file: Optional[Path]):
+    """Stop a running app and deregister it from the auth-proxy."""
+    session_name = _get_session_name()
+
+    pid = _get_running_pid(app_name)
+    if not pid:
+        click.echo(f"⚠️  App '{app_name}' is not running")
+        return
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        click.echo(f"🛑 Stopped app '{app_name}' (PID {pid})")
+    except OSError as e:
+        click.echo(f"❌ Failed to stop process: {e}", err=True)
+
+    _pid_file(app_name).unlink(missing_ok=True)
+
+    if session_name:
+        _deregister_app(session_name, app_name)
+        click.echo(f"🔌 Deregistered from auth-proxy")
+
+
 SETUP_IGNORE = [".env.example", ".env.template"]
 
 
@@ -230,8 +481,11 @@ def setup_env():
         out_file.write_text(result.stdout)
 
         click.echo(f"   ✅ Decrypted -> {click.style(out_file.name, fg='cyan')}")
-        click.echo(f"   💡 Run: {click.style(f'source {out_file.name}', fg='yellow')}")
+        cmd = f"""set -a
+        source {out_file.name}
+        set +a"""
 
+        click.echo(f"   💡 Run:\n{click.style(cmd, fg='yellow')}")
 
 def _detect_workspaces() -> List[str]:
     tiers = {"BRONZE", "SILVER", "GOLD"}

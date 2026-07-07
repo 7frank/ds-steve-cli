@@ -1,0 +1,8 @@
+apps:
+  - name: csv-explorer
+    command: ["python", "app.py"]
+    port: 8501
+
+  - name: notebook
+    command: ["jupyter", "notebook", "--no-browser", "--port", "8888", "--NotebookApp.token", ""]
+    port: 8888
