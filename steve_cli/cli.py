@@ -319,6 +319,10 @@ def apps_list(apps_file: Optional[Path]):
         if command:
             click.echo(f"    Command: {click.style(' '.join(command), fg='cyan')}")
         click.echo(f"    Port: {click.style(str(port), fg='magenta')}")
+        if pid:
+            uf = _url_file(name)
+            url = uf.read_text().strip() if uf.exists() else f'http://localhost:{port}'
+            click.echo(f"    URL: {click.style(url, fg='cyan')}")
         if env_vars:
             click.echo(f"    Environment: {click.style(f'{len(env_vars)} variables', fg='green')}")
         click.echo()
