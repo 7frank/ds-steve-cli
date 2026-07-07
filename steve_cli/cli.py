@@ -5,7 +5,7 @@ Steve CLI - A simple tool to run jobs from jobs.yaml with proper environment set
 Usage:
     steve jobs ls              List all available jobs
     steve jobs run <job-name>  Run a job with its environment variables
-    steve setup all            Decrypt SOPS-encoded .env files
+    steve setup all            Decrypt SOPS-encrypted .env files
 """
 
 import os
@@ -453,16 +453,16 @@ def setup():
 
 @setup.command("env")
 def setup_env():
-    """Decrypt SOPS-encoded .env files in current directory and write plaintext .env files."""
+    """Decrypt SOPS-encrypted .env files in current directory and write plaintext .env files."""
     cwd = Path.cwd()
     found: List[Path] = []
-    for pattern in ["*.enc.env", "*.encoded.env"]:
+    for pattern in ["*.enc.env", "*.encrypted.env"]:
         found.extend(sorted(cwd.glob(pattern)))
 
     found = [f for f in found if f.name not in SETUP_IGNORE]
 
     if not found:
-        click.echo("No *.enc.env or *.encoded.env files found.")
+        click.echo("No *.enc.env or *.encrypted.env files found.")
         return
 
     for enc_file in found:
@@ -492,7 +492,7 @@ def setup_env():
         if keys:
             click.echo(f"   🔑 Keys: {click.style(', '.join(keys), fg='green')}")
 
-        stem = enc_file.name.replace(".encoded.env", "").replace(".enc.env", "")
+        stem = enc_file.name.replace(".encrypted.env", "").replace(".enc.env", "")
         out_file = cwd / f"{stem}.env"
         out_file.write_text(result.stdout)
 

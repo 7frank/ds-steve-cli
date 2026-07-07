@@ -1,6 +1,6 @@
 1965 uv sync
 1967 uv run steve setup env
-1968 sops -d .encoded.workspaces.env > .workspaces.env
+1968 sops -d .encrypted.workspaces.env > .workspaces.env
 1985 set -a
 1986 source .env
 1987 source .workspaces.env
