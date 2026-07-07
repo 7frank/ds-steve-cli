@@ -178,6 +178,7 @@ def jobs_run(job_name: str, jobs_file: Optional[Path]):
 
 APPS_DIR = Path.home() / ".steve" / "apps"
 AUTH_PROXY_INTERNAL_URL = "http://auth-proxy-service"
+APP_NAME_PREFIX = "term-"
 
 
 class AppsConfig:
@@ -225,6 +226,10 @@ def _get_session_name() -> Optional[str]:
 
 def _pid_file(app_name: str) -> Path:
     return APPS_DIR / f"{app_name}.pid"
+
+
+def _url_file(app_name: str) -> Path:
+    return APPS_DIR / f"{app_name}.url"
 
 
 def _get_running_pid(app_name: str) -> Optional[int]:
@@ -342,6 +347,9 @@ def apps_start(app_name: str, apps_file: Optional[Path]):
     existing_pid = _get_running_pid(app_name)
     if existing_pid:
         click.echo(f"⚠️  App '{app_name}' is already running (PID {existing_pid})")
+        uf = _url_file(app_name)
+        if uf.exists():
+            click.echo(f"🌐 Access at: {click.style(uf.read_text().strip(), fg='cyan')}")
         return
 
     command = app_def.get('command', [])
@@ -383,7 +391,7 @@ def apps_start(app_name: str, apps_file: Optional[Path]):
 
     _pid_file(app_name).write_text(str(proc.pid))
 
-    result = _register_app(session_name, app_name, port)
+    result = _register_app(session_name, f"{APP_NAME_PREFIX}{app_name}", port)
 
     if result:
         click.echo(f"✅ App started (PID {proc.pid}) and registered with auth-proxy")
@@ -395,7 +403,10 @@ def apps_start(app_name: str, apps_file: Optional[Path]):
     if public_url:
         click.echo(f"🌐 Access at: {click.style(public_url, fg='cyan')}")
     else:
-        click.echo(f"🌐 Access at (local): {click.style(f'http://localhost:{port}', fg='yellow')}")
+        public_url = f'http://localhost:{port}'
+        click.echo(f"🌐 Access at (local): {click.style(public_url, fg='yellow')}")
+
+    _url_file(app_name).write_text(public_url)
 
     click.echo(f"📄 Logs: {click.style(str(log_file), fg='yellow')}")
 
@@ -420,9 +431,10 @@ def apps_stop(app_name: str, apps_file: Optional[Path]):
         click.echo(f"❌ Failed to stop process: {e}", err=True)
 
     _pid_file(app_name).unlink(missing_ok=True)
+    _url_file(app_name).unlink(missing_ok=True)
 
     if session_name:
-        _deregister_app(session_name, app_name)
+        _deregister_app(session_name, f"{APP_NAME_PREFIX}{app_name}")
         click.echo(f"🔌 Deregistered from auth-proxy")
 
 
