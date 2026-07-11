@@ -31,10 +31,10 @@ def run(get_storage, validator):
     bronze = get_storage("bronze")
     silver = get_storage("silver")
 
-    raw = bronze.get_bytes(SOURCE_PATH)
-    logger.info("Read %d bytes from bronze/%s", len(raw), SOURCE_PATH)
+    src = bronze.read(SOURCE_PATH)
+    logger.info("Read %d bytes from bronze/%s", len(src.data), SOURCE_PATH)
 
-    df = pl.read_csv(raw)
+    df = pl.read_csv(src.data)
 
     dq_validator = build_validator()
     result = dq_validator.validate(df)
@@ -45,7 +45,7 @@ def run(get_storage, validator):
         for f in result.failures:
             print(f"  ✗ {f.check_name} [{f.column}]: {f.message}")
 
-    bronze.attach_validation(SOURCE_PATH, result)
+    src.validate(result)
 
     df_clean = df.filter(
         pl.col("customer_id").is_not_null()
@@ -56,26 +56,15 @@ def run(get_storage, validator):
     )
     print(f"\nDropped {len(df) - len(df_clean)} invalid rows, kept {len(df_clean)}")
 
-    cleaned = df_clean.write_csv().encode()
-
-    try:
-        silver.put_bytes(cleaned, TARGET_PATH)
-        logger.info("Wrote %d bytes to silver/%s", len(cleaned), TARGET_PATH)
-    except EnvironmentError:
-        logger.warning("S3 not available, skipping write")
-
-    silver.attach_facets(TARGET_PATH, {
-        "schema": {
-            "fields": [
-                {"name": "order_id",        "type": "integer", "description": "Unique order identifier"},
-                {"name": "customer_id",     "type": "integer", "description": "Customer identifier"},
-                {"name": "amount",          "type": "float",   "description": "Order amount in EUR"},
-                {"name": "country",         "type": "string",  "description": "ISO 3166-1 alpha-2 country code"},
-                {"name": "status",          "type": "string",  "description": "Order fulfillment status"},
-                {"name": "amount_incl_vat", "type": "float",   "description": "Amount including 19% VAT"},
-            ]
-        }
-    })
+    silver.write(TARGET_PATH, df_clean.write_csv().encode()).describe(
+        order_id        = "Unique order identifier",
+        customer_id     = "Customer identifier",
+        amount          = "Order amount in EUR",
+        country         = "ISO 3166-1 alpha-2 country code",
+        status          = "Order fulfillment status",
+        amount_incl_vat = "Amount including 19% VAT",
+    )
+    logger.info("Wrote to silver/%s", TARGET_PATH)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, List, Union
+from typing import Any, Callable, List, Union
 
 from steve_cli.storage.protocol import Storage
 
 logger = logging.getLogger(__name__)
+
+
+class DatasetHandle:
+    def __init__(self, path: str, data: bytes, session: Any):
+        self.data = data
+        self._path = path
+        self._session = session
+
+    def describe(self, **column_descriptions: str) -> DatasetHandle:
+        existing_fields = self._session._facets.get(self._path, {}).get("schema", {}).get("fields", [])
+        by_name = {f["name"]: dict(f) for f in existing_fields}
+        for col, desc in column_descriptions.items():
+            by_name.setdefault(col, {"name": col, "type": "string"})["description"] = desc
+        self._session.attach_facets(self._path, {"schema": {"fields": list(by_name.values())}})
+        return self
+
+    def validate(self, result: Any) -> DatasetHandle:
+        self._session.attach_validation(self._path, result)
+        return self
 
 
 def _extract_facets(data: bytes, path: str) -> dict:
@@ -51,6 +70,13 @@ class LineageStorage:
         facets = _extract_facets(data, path)
         self._session.record_read(path, facets or None)
         return data
+
+    def read(self, path: str) -> DatasetHandle:
+        return DatasetHandle(path, self.get_bytes(path), self._session)
+
+    def write(self, path: str, data: bytes) -> DatasetHandle:
+        self.put_bytes(data, path)
+        return DatasetHandle(path, data, self._session)
 
     def attach_facets(self, path: str, facets: dict) -> None:
         self._session.attach_facets(path, facets)
