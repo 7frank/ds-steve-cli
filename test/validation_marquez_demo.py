@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
+import logging
+
 import polars as pl
 
 from steve_cli.decorators import lineage_job
-from steve_cli.storage.metadata import MetadataRegistry
 from steve_cli.validation.adapters.validoopsie import ValidoopsieAdapter
+
+logger = logging.getLogger(__name__)
 
 SOURCE_PATH = "demo/orders.csv"
 TARGET_PATH = "demo/orders_clean.csv"
-
-SAMPLE_CSV = b"""order_id,customer_id,amount,country,status
-1,101,49.99,DE,completed
-2,102,0.00,US,completed
-3,103,129.50,FR,completed
-4,104,-5.00,DE,completed
-5,,89.00,US,pending
-6,106,200.00,XX,completed
-7,107,59.99,DE,completed
-"""
 
 
 def build_validator() -> ValidoopsieAdapter:
@@ -38,15 +31,8 @@ def run(get_storage, validator):
     bronze = get_storage("bronze")
     silver = get_storage("silver")
 
-    try:
-        raw = bronze.get_bytes(SOURCE_PATH)
-        print(f"Read {len(raw)} bytes from bronze/{SOURCE_PATH}")
-    except (SystemExit, EnvironmentError):
-        print("[demo] S3 not available, using built-in sample data")
-        raw = SAMPLE_CSV
-
-    meta = MetadataRegistry.extract(raw, SOURCE_PATH)
-    print(f"Metadata: format={meta.format}, rows={meta.rows}, columns={[c.name for c in meta.columns]}")
+    raw = bronze.get_bytes(SOURCE_PATH)
+    logger.info("Read %d bytes from bronze/%s", len(raw), SOURCE_PATH)
 
     df = pl.read_csv(raw)
 
@@ -59,13 +45,14 @@ def run(get_storage, validator):
         for f in result.failures:
             print(f"  ✗ {f.check_name} [{f.column}]: {f.message}")
 
-    dq_facet = result.to_openlineage_facet()
-    print(f"\nQuality facet: {dq_facet['dataQualityFacet']['checks']}")
+    bronze.attach_validation(SOURCE_PATH, result)
 
     df_clean = df.filter(
         pl.col("customer_id").is_not_null()
         & (pl.col("amount") > 0)
         & (pl.col("country").str.len_chars() == 2)
+    ).with_columns(
+        (pl.col("amount") * 1.19).round(2).alias("amount_incl_vat")
     )
     print(f"\nDropped {len(df) - len(df_clean)} invalid rows, kept {len(df_clean)}")
 
@@ -73,10 +60,12 @@ def run(get_storage, validator):
 
     try:
         silver.put_bytes(cleaned, TARGET_PATH)
-        print(f"Wrote {len(cleaned)} bytes to silver/{TARGET_PATH}")
-    except (SystemExit, EnvironmentError):
-        print("[demo] S3 not available, skipping write")
+        logger.info("Wrote %d bytes to silver/%s", len(cleaned), TARGET_PATH)
+    except EnvironmentError:
+        logger.warning("S3 not available, skipping write")
 
 
 if __name__ == "__main__":
+    import os
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "WARNING"), format="%(levelname)s %(name)s: %(message)s")
     run()

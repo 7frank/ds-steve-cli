@@ -27,7 +27,14 @@ class OpenLineageAdapter(LineagePort):
 
     def emit(self, event: LineageEvent) -> None:
         from openlineage.client.event_v2 import Dataset, Job, Run, RunEvent, RunState
-        from openlineage.client.facet import ErrorMessageRunFacet
+        from openlineage.client.facet import (
+            Assertion,
+            DataQualityAssertionsDatasetFacet,
+            ErrorMessageRunFacet,
+            SchemaDatasetFacet,
+            SchemaField,
+            StorageDatasetFacet,
+        )
 
         run_facets = {}
         if "errorMessage" in event.run_facets:
@@ -37,11 +44,34 @@ class OpenLineageAdapter(LineagePort):
                 programmingLanguage=err.get("programmingLanguage", "python"),
             )
 
+        def _build_dataset_facets(raw: dict) -> dict:
+            facets: dict = {}
+            if "schema" in raw:
+                s = raw["schema"]
+                facets["schema"] = SchemaDatasetFacet(
+                    fields=[SchemaField(name=f["name"], type=f.get("type", "string")) for f in s.get("fields", [])]
+                )
+            if "storage" in raw:
+                st = raw["storage"]
+                facets["storage"] = StorageDatasetFacet(
+                    storageLayer=st.get("storageLayer", "s3"),
+                    fileFormat=st.get("fileFormat", ""),
+                )
+            if "dataQualityFacet" in raw:
+                dq = raw["dataQualityFacet"]
+                assertions = [
+                    Assertion(assertion=f["check"], success=False, column=f.get("column"))
+                    for f in dq.get("failures", [])
+                ]
+                if assertions:
+                    facets["dataQuality"] = DataQualityAssertionsDatasetFacet(assertions=assertions)
+            return facets
+
         def _to_ol_dataset(ref: DatasetRef) -> Dataset:
             return Dataset(
                 namespace=ref.namespace,
                 name=ref.name,
-                facets=ref.facets or {},
+                facets=_build_dataset_facets(ref.facets) if ref.facets else {},
             )
 
         ol_event = RunEvent(

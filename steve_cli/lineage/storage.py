@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable, List, Union
 
 from steve_cli.storage.protocol import Storage
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_facets(data: bytes, path: str) -> dict:
+    try:
+        from steve_cli.storage.metadata.registry import MetadataRegistry
+        meta = MetadataRegistry.extract(data, path)
+        return meta.to_openlineage_facet().get("datasetFacets", {})
+    except Exception as exc:
+        logger.debug("Could not extract metadata facets for %s: %s", path, exc)
+        return {}
 
 
 class LineageStorage:
@@ -30,12 +43,17 @@ class LineageStorage:
 
     def put_bytes(self, data: bytes, path: str) -> None:
         self._storage.put_bytes(data, path)
-        self._session.record_write(path)
+        facets = _extract_facets(data, path)
+        self._session.record_write(path, facets or None)
 
     def get_bytes(self, path: str) -> bytes:
         data = self._storage.get_bytes(path)
-        self._session.record_read(path)
+        facets = _extract_facets(data, path)
+        self._session.record_read(path, facets or None)
         return data
+
+    def attach_validation(self, path: str, result: object) -> None:
+        self._session.attach_validation(path, result)
 
     def list(self, prefix: str = "") -> List[str]:
         return self._storage.list(prefix)

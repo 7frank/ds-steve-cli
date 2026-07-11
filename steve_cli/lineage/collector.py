@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass, field
+from typing import Any, Dict
 
 from .port import DatasetRef, LineageEvent, LineagePort
 from .registry import LineageRegistry
@@ -16,12 +17,24 @@ class LineageSession:
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     _inputs: set[str] = field(default_factory=set)
     _outputs: set[str] = field(default_factory=set)
+    _facets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
-    def record_read(self, dataset: str) -> None:
+    def record_read(self, dataset: str, facets: Dict[str, Any] | None = None) -> None:
         self._inputs.add(dataset)
+        if facets:
+            self._facets.setdefault(dataset, {}).update(facets)
 
-    def record_write(self, dataset: str) -> None:
+    def record_write(self, dataset: str, facets: Dict[str, Any] | None = None) -> None:
         self._outputs.add(dataset)
+        if facets:
+            self._facets.setdefault(dataset, {}).update(facets)
+
+    def attach_facets(self, dataset: str, facets: Dict[str, Any]) -> None:
+        self._facets.setdefault(dataset, {}).update(facets)
+
+    def attach_validation(self, dataset: str, result: Any) -> None:
+        facet = result.to_openlineage_facet()
+        self._facets.setdefault(dataset, {}).update(facet)
 
     def _build_event(self, state: str, run_facets: dict | None = None) -> LineageEvent:
         return LineageEvent(
@@ -29,8 +42,8 @@ class LineageSession:
             namespace=self.namespace,
             run_id=self.run_id,
             state=state,
-            inputs=[DatasetRef(namespace=self.namespace, name=x) for x in self._inputs],
-            outputs=[DatasetRef(namespace=self.namespace, name=x) for x in self._outputs],
+            inputs=[DatasetRef(namespace=self.namespace, name=x, facets=self._facets.get(x, {})) for x in self._inputs],
+            outputs=[DatasetRef(namespace=self.namespace, name=x, facets=self._facets.get(x, {})) for x in self._outputs],
             run_facets=run_facets or {},
         )
 

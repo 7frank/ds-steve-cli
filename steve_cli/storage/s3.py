@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path, PurePosixPath
 from typing import List
 
@@ -78,22 +77,21 @@ class S3Storage:
     def _handle_client_error(self, error: ClientError, path: str, operation: str) -> None:
         code = error.response["Error"]["Code"]
         if code == "AccessDenied":
-            print(f"❌ Access denied when {operation}: {path}", file=sys.stderr)
+            logger.error("Access denied when %s: %s", operation, path)
         elif code == "NoSuchBucket":
-            print(f"❌ Bucket not found: {self.bucket}", file=sys.stderr)
+            logger.error("Bucket not found: %s", self.bucket)
         elif code == "NoSuchKey":
-            print(f"❌ File not found: {path}", file=sys.stderr)
+            logger.error("File not found: %s", path)
         else:
-            print(f"❌ Storage error during {operation}: {error}", file=sys.stderr)
-        sys.exit(1)
+            logger.error("Storage error during %s: %s", operation, error)
+        raise EnvironmentError(f"S3 {operation} failed for {path}: {error.response['Error']['Code']}")
 
     def put_file(self, local_path: str, path: str) -> None:
         try:
             self.client.upload_file(local_path, self.bucket, self._key(path))
             logger.info("Uploaded %s", self._object_location(path))
         except EndpointConnectionError:
-            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
-            sys.exit(1)
+            raise EnvironmentError(f"Cannot connect to storage at {self.endpoint}")
         except ClientError as e:
             self._handle_client_error(e, path, "uploading")
 
@@ -103,8 +101,7 @@ class S3Storage:
             self.client.download_file(self.bucket, self._key(path), local_path)
             logger.info("Downloaded %s", self._object_location(path))
         except EndpointConnectionError:
-            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
-            sys.exit(1)
+            raise EnvironmentError(f"Cannot connect to storage at {self.endpoint}")
         except ClientError as e:
             self._handle_client_error(e, path, "downloading")
 
@@ -113,8 +110,7 @@ class S3Storage:
             self.client.put_object(Bucket=self.bucket, Key=self._key(path), Body=data)
             logger.info("Stored %s", self._object_location(path))
         except EndpointConnectionError:
-            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
-            sys.exit(1)
+            raise EnvironmentError(f"Cannot connect to storage at {self.endpoint}")
         except ClientError as e:
             self._handle_client_error(e, path, "writing")
 
@@ -124,8 +120,7 @@ class S3Storage:
             logger.info("Retrieved %s", self._object_location(path))
             return obj["Body"].read()
         except EndpointConnectionError:
-            print(f"❌ Cannot connect to storage at {self.endpoint}", file=sys.stderr)
-            sys.exit(1)
+            raise EnvironmentError(f"Cannot connect to storage at {self.endpoint}")
         except ClientError as e:
             self._handle_client_error(e, path, "reading")
 
