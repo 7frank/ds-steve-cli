@@ -23,7 +23,7 @@ SAMPLE_CSV = b"""order_id,customer_id,amount,country,status
     namespace="demo",
     lineage_provider="openlineage",
 )
-def run(get_storage, validator):
+def run(get_storage):
     bronze = get_storage("bronze")
     bronze.put_bytes(SAMPLE_CSV, SOURCE_PATH)
     logger.info("Uploaded sample orders to bronze/%s", SOURCE_PATH)

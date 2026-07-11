@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import functools
-import os
 from typing import Any, Callable
 
 from steve_cli.lineage.collector import make_session
 from steve_cli.storage.s3 import S3Storage
 from steve_cli.lineage.storage import LineageStorage
-from steve_cli.validation.registry import ValidationRegistry
 
 
 def lineage_job(
     name: str | None = None,
     namespace: str | None = None,
-    validation: str | None = None,
     lineage_provider: str | None = None,
     lineage_enabled: bool = True,
 ) -> Callable:
@@ -37,11 +34,8 @@ def lineage_job(
                     session=session,
                 )
 
-            provider = validation or os.getenv("VALIDATION_PROVIDER", "null")
-            validator = ValidationRegistry.create(provider)
-
             try:
-                result = fn(*args, get_storage=get_storage, validator=validator, **kwargs)
+                result = fn(*args, get_storage=get_storage, **kwargs)
             except Exception as exc:
                 session.fail(exc)
                 raise

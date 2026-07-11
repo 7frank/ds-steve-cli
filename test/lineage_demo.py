@@ -17,8 +17,8 @@ SAMPLE_CSV = b"""customer_id,name,email,country
 """
 
 
-@lineage_job(name="lineage-demo", namespace="demo", validation="null", lineage_provider="logging")
-def run(get_storage, validator):
+@lineage_job(name="lineage-demo", namespace="demo", lineage_provider="logging")
+def run(get_storage):
     bronze = get_storage("bronze")
     silver = get_storage("silver")
 
@@ -34,9 +34,6 @@ def run(get_storage, validator):
     data_lines = [row for row in lines[1:] if row.split(",")[1].strip()]
     cleaned = (header + "\n" + "\n".join(data_lines) + "\n").encode()
     logger.info("Dropped %d rows with missing name", len(lines) - 1 - len(data_lines))
-
-    result = validator.validate(None)
-    logger.info("Validation: framework=%s, success=%s", result.framework, result.success)
 
     try:
         silver.put_bytes(cleaned, TARGET_PATH)

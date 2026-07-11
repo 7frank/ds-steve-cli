@@ -24,10 +24,9 @@ def build_validator() -> ValidoopsieAdapter:
 @lineage_job(
     name="orders-bronze-to-silver",
     namespace="demo",
-    validation="null",
     lineage_provider="openlineage",
 )
-def run(get_storage, validator):
+def run(get_storage):
     bronze = get_storage("bronze")
     silver = get_storage("silver")
 
