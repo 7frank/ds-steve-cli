@@ -49,7 +49,7 @@ class OpenLineageAdapter(LineagePort):
             if "schema" in raw:
                 s = raw["schema"]
                 facets["schema"] = SchemaDatasetFacet(
-                    fields=[SchemaField(name=f["name"], type=f.get("type", "string")) for f in s.get("fields", [])]
+                    fields=[SchemaField(name=f["name"], type=f.get("type", "string"), description=f.get("description")) for f in s.get("fields", [])]
                 )
             if "storage" in raw:
                 st = raw["storage"]

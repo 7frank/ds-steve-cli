@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 class ColumnMetadata:
     name: str
     type: str
+    description: str | None = None
 
 
 @dataclass
@@ -41,7 +42,10 @@ class FileMetadata:
             facets["schema"] = {
                 "_producer": "steve-cli",
                 "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/SchemaDatasetFacet.json",
-                "fields": [{"name": c.name, "type": c.type} for c in self.columns],
+                "fields": [
+                    {k: v for k, v in {"name": c.name, "type": c.type, "description": c.description}.items() if v is not None}
+                    for c in self.columns
+                ],
             }
         if self.extra:
             facets[self.format] = {"_producer": "steve-cli", **self.extra}

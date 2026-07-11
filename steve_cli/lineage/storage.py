@@ -52,6 +52,9 @@ class LineageStorage:
         self._session.record_read(path, facets or None)
         return data
 
+    def attach_facets(self, path: str, facets: dict) -> None:
+        self._session.attach_facets(path, facets)
+
     def attach_validation(self, path: str, result: object) -> None:
         self._session.attach_validation(path, result)
 

@@ -64,6 +64,19 @@ def run(get_storage, validator):
     except EnvironmentError:
         logger.warning("S3 not available, skipping write")
 
+    silver.attach_facets(TARGET_PATH, {
+        "schema": {
+            "fields": [
+                {"name": "order_id",        "type": "integer", "description": "Unique order identifier"},
+                {"name": "customer_id",     "type": "integer", "description": "Customer identifier"},
+                {"name": "amount",          "type": "float",   "description": "Order amount in EUR"},
+                {"name": "country",         "type": "string",  "description": "ISO 3166-1 alpha-2 country code"},
+                {"name": "status",          "type": "string",  "description": "Order fulfillment status"},
+                {"name": "amount_incl_vat", "type": "float",   "description": "Amount including 19% VAT"},
+            ]
+        }
+    })
+
 
 if __name__ == "__main__":
     import os
