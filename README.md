@@ -100,6 +100,54 @@ Running `steve extract-data` will:
 - ✅ **Colorful**: Nice colored output for better readability
 - ✅ **Error handling**: Clear error messages for missing jobs or files
 
+## File Metadata Extraction
+
+Steve automatically extracts metadata from files read or written via `MetadataRegistry`. The extractor is chosen by file extension — no configuration needed.
+
+| Extension | Extractor | Requires |
+|---|---|---|
+| `.parquet`, `.pq` | `ParquetExtractor` | `pip install steve-cli[polars]` |
+| `.csv`, `.tsv`, `.txt` | `CsvExtractor` | stdlib only |
+| `.json`, `.jsonl`, `.ndjson` | `JsonExtractor` | stdlib only |
+| `.xlsx`, `.xls`, `.xlsm` | `ExcelExtractor` | `pip install steve-cli[excel]` |
+| anything else | `GenericExtractor` | stdlib only |
+
+### Adding a custom extractor
+
+Implement `MetadataExtractorPort`, declare which extensions it handles, and register it once at startup:
+
+```python
+from steve_cli.storage.metadata.port import MetadataExtractorPort, FileMetadata, ColumnMetadata
+from steve_cli.storage.metadata.registry import MetadataRegistry
+
+class AvroExtractor(MetadataExtractorPort):
+    extensions = (".avro",)
+
+    def extract(self, data: bytes, path: str) -> FileMetadata:
+        import fastavro, io
+        reader = fastavro.reader(io.BytesIO(data))
+        schema = reader.writer_schema
+        columns = [
+            ColumnMetadata(name=f["name"], type=str(f["type"]))
+            for f in schema.get("fields", [])
+        ]
+        records = list(reader)
+        return FileMetadata(
+            format="avro",
+            size_bytes=len(data),
+            rows=len(records),
+            columns=columns,
+        )
+
+MetadataRegistry.register("avro", AvroExtractor)
+```
+
+After registration, `MetadataRegistry.extract(data, "output.avro")` picks `AvroExtractor` automatically. You can also force a specific extractor for any file via the env var:
+
+```bash
+METADATA_EXTRACTOR=avro steve jobs run my-job
+```
+
 ## Why Steve?
 
 Named after Steve Jobs - because it helps you run **jobs** locally! 😄

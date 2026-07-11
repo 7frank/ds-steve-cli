@@ -24,3 +24,34 @@ jobs:
     command: ["sh", "-c", "echo Cleaning up data older than $RETENTION_DAYS days"]
     env:
       RETENTION_DAYS: "30"
+
+  - name: lineage-demo
+    command: ["python", "lineage_demo.py"]
+    env:
+      LINEAGE_PROVIDER: "logging"
+      VALIDATION_PROVIDER: "null"
+      OPENLINEAGE_NAMESPACE: "demo"
+      OPENLINEAGE_JOB_NAME: "lineage-demo"
+      S3_ENDPOINT: "http://localhost:9000"
+      BRONZE_ACCESS_KEY: "minioadmin"
+      BRONZE_SECRET_KEY: "minioadmin"
+      BRONZE_BUCKET: "bronze"
+      SILVER_ACCESS_KEY: "minioadmin"
+      SILVER_SECRET_KEY: "minioadmin"
+      SILVER_BUCKET: "silver"
+
+  - name: validation-marquez-demo
+    command: ["python", "validation_marquez_demo.py"]
+    env:
+      LINEAGE_PROVIDER: "openlineage"
+      VALIDATION_PROVIDER: "validoopsie"
+      OPENLINEAGE_URL: "http://localhost:5000/api/v1/lineage"
+      OPENLINEAGE_NAMESPACE: "demo"
+      OPENLINEAGE_JOB_NAME: "orders-bronze-to-silver"
+      S3_ENDPOINT: "http://localhost:9000"
+      BRONZE_ACCESS_KEY: "minioadmin"
+      BRONZE_SECRET_KEY: "minioadmin"
+      BRONZE_BUCKET: "bronze"
+      SILVER_ACCESS_KEY: "minioadmin"
+      SILVER_SECRET_KEY: "minioadmin"
+      SILVER_BUCKET: "silver"
