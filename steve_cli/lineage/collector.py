@@ -86,7 +86,11 @@ def make_session(
         kwargs = {"url": url} if prov == "openlineage" else {}
         try:
             port = LineageRegistry.create(prov, **kwargs)
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Lineage disabled: could not initialize provider %r: %s", prov, exc
+            )
             from .adapters.null import NullLineageAdapter
 
             port = NullLineageAdapter()

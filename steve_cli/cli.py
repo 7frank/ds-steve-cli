@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 import click
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 import questionary
 import yaml
 
@@ -69,6 +69,10 @@ def run_job_command(job: Dict[str, Any]) -> int:
         return 1
 
     env = os.environ.copy()
+    for env_filename in [".env", ".workspaces.env"]:
+        env_path = Path.cwd() / env_filename
+        if env_path.exists():
+            env.update({k: v for k, v in dotenv_values(env_path).items() if v is not None})
     job_env = job.get('env', {})
     for key, value in job_env.items():
         env[key] = str(value)
@@ -369,6 +373,10 @@ def apps_start(app_name: str, apps_file: Optional[Path]):
         sys.exit(1)
 
     env = os.environ.copy()
+    for env_filename in [".env", ".workspaces.env"]:
+        env_path = config.apps_file.parent / env_filename
+        if env_path.exists():
+            env.update({k: v for k, v in dotenv_values(env_path).items() if v is not None})
     for key, value in env_vars.items():
         env[key] = str(value)
 

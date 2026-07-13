@@ -45,10 +45,11 @@ def lineage_job(
                 result = fn(*args, get_storage=get_storage, **kwargs)
             except Exception as exc:
                 session.fail(exc)
+                import sys
                 from steve_cli.validation.port import DataQualityError
-                if isinstance(exc, DataQualityError):
-                    import sys
-                    print(f"ERROR {exc}", file=sys.stderr)
+                if isinstance(exc, (DataQualityError, EnvironmentError)):
+                    import click
+                    click.secho(f"ERROR {exc}", fg="red", bold=True, err=True)
                     sys.exit(1)
                 raise
 
