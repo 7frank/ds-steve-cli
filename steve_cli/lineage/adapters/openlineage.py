@@ -29,7 +29,9 @@ class OpenLineageAdapter(LineagePort):
         from openlineage.client.event_v2 import Dataset, Job, Run, RunEvent, RunState
         from openlineage.client.facet import (
             Assertion,
+            ColumnMetric,
             DataQualityAssertionsDatasetFacet,
+            DataQualityMetricsInputDatasetFacet,
             ErrorMessageRunFacet,
             SchemaDatasetFacet,
             SchemaField,
@@ -65,6 +67,16 @@ class OpenLineageAdapter(LineagePort):
                 ]
                 if assertions:
                     facets["dataQuality"] = DataQualityAssertionsDatasetFacet(assertions=assertions)
+            if "dataQualityMetrics" in raw:
+                m = raw["dataQualityMetrics"]
+                col_metrics = {
+                    col: ColumnMetric(nullCount=metrics.get("nullCount"))
+                    for col, metrics in m.get("columnMetrics", {}).items()
+                }
+                facets["dataQualityMetrics"] = DataQualityMetricsInputDatasetFacet(
+                    rowCount=m.get("rowCount"),
+                    columnMetrics=col_metrics if col_metrics else None,
+                )
             return facets
 
         def _to_ol_dataset(ref: DatasetRef) -> Dataset:

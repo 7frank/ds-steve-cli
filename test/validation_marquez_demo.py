@@ -55,14 +55,16 @@ def run(get_storage):
     )
     print(f"\nDropped {len(df) - len(df_clean)} invalid rows, kept {len(df_clean)}")
 
-    silver.write(TARGET_PATH, df_clean.write_csv().encode()).describe(
-        order_id        = "Unique order identifier",
-        customer_id     = "Customer identifier",
-        amount          = "Order amount in EUR",
-        country         = "ISO 3166-1 alpha-2 country code",
-        status          = "Order fulfillment status",
-        amount_incl_vat = "Amount including 19% VAT",
-    )
+    silver.write(TARGET_PATH, df_clean.write_csv().encode()) \
+        .validate(result) \
+        .describe(
+            order_id        = "Unique order identifier",
+            customer_id     = "Customer identifier",
+            amount          = "Order amount in EUR",
+            country         = "ISO 3166-1 alpha-2 country code",
+            status          = "Order fulfillment status",
+            amount_incl_vat = "Amount including 19% VAT",
+        )
     logger.info("Wrote to silver/%s", TARGET_PATH)
 
 

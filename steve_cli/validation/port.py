@@ -37,7 +37,15 @@ class ValidationResult:
                     {"check": f.check_name, "message": f.message, "column": f.column}
                     for f in self.failures
                 ],
-            }
+            },
+            "dataQualityMetrics": {
+                "rowCount": self.checks_total,
+                "columnMetrics": {
+                    f.column: {"nullCount": 1}
+                    for f in self.failures
+                    if f.column
+                },
+            },
         }
 
 
