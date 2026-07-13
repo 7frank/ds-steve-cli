@@ -41,9 +41,16 @@ class OpenLineageAdapter(LineagePort):
         run_facets = {}
         if "errorMessage" in event.run_facets:
             err = event.run_facets["errorMessage"]
+            stack_trace = None
+            if err.get("description"):
+                stack_trace = "\n".join(
+                    f"  [{a['column'] or a['assertion']}] {a['message']}"
+                    for a in err["description"]
+                )
             run_facets["errorMessage"] = ErrorMessageRunFacet(
                 message=err.get("message", ""),
                 programmingLanguage=err.get("programmingLanguage", "python"),
+                stackTrace=stack_trace,
             )
 
         def _build_dataset_facets(raw: dict) -> dict:

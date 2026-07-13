@@ -54,17 +54,17 @@ class LineageSession:
         self.port.emit(self._build_event("COMPLETE"))
 
     def fail(self, error: Exception) -> None:
-        self.port.emit(
-            self._build_event(
-                "FAIL",
-                run_facets={
-                    "errorMessage": {
-                        "message": str(error),
-                        "programmingLanguage": "python",
-                    }
-                },
-            )
-        )
+        from steve_cli.validation.port import DataQualityError
+        error_facet: Dict[str, Any] = {
+            "message": str(error),
+            "programmingLanguage": "python",
+        }
+        if isinstance(error, DataQualityError):
+            error_facet["description"] = [
+                {"assertion": f.check_name, "column": f.column, "message": f.message}
+                for f in error.failures
+            ]
+        self.port.emit(self._build_event("FAIL", run_facets={"errorMessage": error_facet}))
 
 
 def make_session(

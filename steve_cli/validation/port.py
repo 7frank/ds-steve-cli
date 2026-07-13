@@ -30,11 +30,7 @@ class ValidationResult:
 
     def raise_on_errors(self) -> ValidationResult:
         if self.has_errors:
-            details = ", ".join(
-                f"{f.column or f.check_name}"
-                for f in self.failures if f.severity == "error"
-            )
-            raise ValueError(f"Validation failed on: {details}")
+            raise DataQualityError([f for f in self.failures if f.severity == "error"])
         return self
 
     def to_openlineage_facet(self) -> Dict[str, Any]:
@@ -66,6 +62,13 @@ class ValidationResult:
                 },
             },
         }
+
+
+class DataQualityError(ValueError):
+    def __init__(self, failures: List[CheckFailure]):
+        self.failures = failures
+        details = ", ".join(f.column or f.check_name for f in failures)
+        super().__init__(f"Validation failed on: {details}")
 
 
 class ValidationPort(ABC):
