@@ -60,6 +60,9 @@ great-expectations = [
 excel = [
     "openpyxl>=3.1.0",
 ]
+visidata = [
+    "visidata>=3.0",
+]
 all = [
     "openlineage-python>=1.0.0",
     "pyarrow>=17.0.0",
@@ -68,6 +71,7 @@ all = [
     "great-expectations>=0.18.0",
     "pandas>=2.0.3",
     "openpyxl>=3.1.0",
+    "visidata>=3.0",
 ]
 
 [project.scripts]
