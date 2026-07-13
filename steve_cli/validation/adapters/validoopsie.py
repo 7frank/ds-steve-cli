@@ -46,6 +46,16 @@ class ValidoopsieAdapter(ValidationPort):
         all_checks = [k for k in results if k != "Summary"]
         failed_names = set(summary.get("failed_validation", []))
 
+        assertions = [
+            {
+                "check": name,
+                "column": results[name].get("column"),
+                "success": name not in failed_names,
+                "severity": severity_by_check.get(name, "error"),
+            }
+            for name in all_checks
+        ]
+
         failures = [
             CheckFailure(
                 check_name=name,
@@ -75,6 +85,7 @@ class ValidoopsieAdapter(ValidationPort):
             checks_passed=total - failed,
             checks_failed=failed,
             failures=failures,
+            assertions=assertions,
             metadata={"engine": "polars"},
         )
 

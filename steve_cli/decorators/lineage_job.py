@@ -38,6 +38,10 @@ def lineage_job(
                 result = fn(*args, get_storage=get_storage, **kwargs)
             except Exception as exc:
                 session.fail(exc)
+                if isinstance(exc, ValueError):
+                    import sys
+                    print(f"ERROR {exc}", file=sys.stderr)
+                    sys.exit(1)
                 raise
 
             session.complete()

@@ -63,11 +63,10 @@ class OpenLineageAdapter(LineagePort):
 
         def _build_input_facets(raw: dict) -> dict:
             input_facets: dict = {}
-            if "dataQualityFacet" in raw:
-                dq = raw["dataQualityFacet"]
+            if "dataQualityAssertions" in raw:
                 assertions = [
-                    Assertion(assertion=f["check"], success=False, column=f.get("column"))
-                    for f in dq.get("failures", [])
+                    Assertion(assertion=a["assertion"], success=a.get("success", False), column=a.get("column"))
+                    for a in raw["dataQualityAssertions"]
                 ]
                 if assertions:
                     input_facets["dataQualityAssertions"] = DataQualityAssertionsDatasetFacet(assertions=assertions)

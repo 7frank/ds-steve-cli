@@ -21,6 +21,7 @@ class ValidationResult:
     checks_passed: int = 0
     checks_failed: int = 0
     failures: List[CheckFailure] = field(default_factory=list)
+    assertions: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -29,11 +30,11 @@ class ValidationResult:
 
     def raise_on_errors(self) -> ValidationResult:
         if self.has_errors:
-            n = sum(1 for f in self.failures if f.severity == "error")
-            raise ValueError(
-                f"Validation failed: {n} error-level check(s) failed "
-                f"({self.checks_failed}/{self.checks_total} total)"
+            details = ", ".join(
+                f"{f.column or f.check_name}"
+                for f in self.failures if f.severity == "error"
             )
+            raise ValueError(f"Validation failed on: {details}")
         return self
 
     def to_openlineage_facet(self) -> Dict[str, Any]:
@@ -52,6 +53,10 @@ class ValidationResult:
                     for f in self.failures
                 ],
             },
+            "dataQualityAssertions": [
+                {"assertion": a["check"], "success": a["success"], "column": a.get("column")}
+                for a in self.assertions
+            ],
             "dataQualityMetrics": {
                 "rowCount": self.checks_total,
                 "columnMetrics": {
