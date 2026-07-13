@@ -62,7 +62,7 @@ class LineageStorage:
     def _dataset_namespace(self) -> str | None:
         s = self._storage
         if hasattr(s, 'endpoint') and hasattr(s, 'bucket'):
-            return f"{s.endpoint}/{s.bucket}"
+            return f"{s.endpoint.rstrip('/')}/{s.bucket}"
         return None
 
     def put_file(self, local_path: str, path: str) -> None:
