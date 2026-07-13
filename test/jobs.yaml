@@ -55,6 +55,22 @@ jobs:
       PYTHONUNBUFFERED: "1"
       LOG_LEVEL: "INFO"
 
+  - name: orders-demo2
+    command: ["python", "orders_demo2.py"]
+    env:
+      LINEAGE_PROVIDER: "openlineage"
+      OPENLINEAGE_URL: "http://localhost:5000/api/v1/lineage"
+      OPENLINEAGE_NAMESPACE: "demo"
+      S3_ENDPOINT: "http://localhost:9000"
+      BRONZE_ACCESS_KEY: "minioadmin"
+      BRONZE_SECRET_KEY: "minioadmin"
+      BRONZE_BUCKET: "bronze"
+      SILVER_ACCESS_KEY: "minioadmin"
+      SILVER_SECRET_KEY: "minioadmin"
+      SILVER_BUCKET: "silver"
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "INFO"
+
   - name: orders-bronze-to-silver
     command: ["python", "validation_marquez_demo.py"]
     env:
