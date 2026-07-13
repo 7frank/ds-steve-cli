@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 import click
+from dotenv import load_dotenv
 import questionary
 import yaml
 
@@ -554,8 +555,14 @@ def _list_bucket(storage_kwargs: dict, label: str, bucket_name: str) -> None:
 
 
 @main.command("buckets")
-def buckets():
+@click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
+              help='Path to .env file(s). Can be specified multiple times. Defaults to .env and .workspace.env')
+def buckets(env_file: tuple):
     """List all S3 buckets detected from env variables and show their files as a tree."""
+    cwd = Path.cwd()
+    env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspace.env"]
+    for ef in env_files:
+        load_dotenv(ef)
     tiers = ["bronze", "silver", "gold"]
 
     options: List[Dict[str, Any]] = []

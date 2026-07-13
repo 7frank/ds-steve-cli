@@ -8,6 +8,10 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 
 
 class Storage(Protocol):
+    """
+    .. deprecated::
+        Use ``steve_cli.storage.protocol.Storage`` instead.
+    """
     def put_file(self, local_path: str, path: str) -> None: ...
     def get_file(self, path: str, local_path: str) -> None: ...
     def put_bytes(self, data: bytes, path: str) -> None: ...
@@ -16,6 +20,10 @@ class Storage(Protocol):
 
 
 class S3Storage:
+    """
+    .. deprecated::
+        Use ``steve_cli.storage.s3.S3Storage`` instead.
+    """
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
         self.tier = tier.lower()
 
@@ -171,4 +179,17 @@ class S3Storage:
 
 
 def get_storage(tier: str = "bronze", workspace: str | None = None) -> Storage:
+    """
+    .. deprecated::
+        Use the ``@lineage_job`` decorator instead, which injects a ``LineageStorage``
+        instance via the ``get_storage`` argument. Example::
+
+            from steve_cli.decorators import lineage_job
+            from steve_cli.lineage.storage import GetStorage
+
+            @lineage_job()
+            def run(get_storage: GetStorage):
+                bronze = get_storage("bronze")
+                df = bronze.read_csv("path/to/file.csv")
+    """
     return S3Storage(tier=tier, workspace=workspace)
