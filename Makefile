@@ -1,13 +1,17 @@
-.PHONY: help next-version build publish release
+.PHONY: help test next-version build publish release
 
 help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
+	@echo "  test          Run all tests"
 	@echo "  next-version  Bump the patch version in pyproject.toml"
 	@echo "  build         Build the package"
 	@echo "  publish       Publish to PyPI"
 	@echo "  release       next-version + build + publish"
+
+test:
+	uv run pytest tests/ -v
 
 next-version:
 	@current=$$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'); \
@@ -25,4 +29,4 @@ build:
 publish:
 	uv publish --username __token__ --password $$(pass pypi/token)
 
-release: next-version build publish
+release: next-version test build publish

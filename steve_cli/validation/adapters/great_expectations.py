@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from steve_cli.validation.port import CheckFailure, ValidationPort, ValidationResult
 
 
 class GreatExpectationsAdapter(ValidationPort):
-    def __init__(self, suite_name: str = "default", expectation_suite: Any = None, **kwargs: Any):
+    def __init__(self, expectations: List[Any], suite_name: str = "default", **kwargs: Any):
         try:
             import great_expectations as gx  # noqa: F401
         except ImportError as exc:
@@ -14,19 +14,34 @@ class GreatExpectationsAdapter(ValidationPort):
                 "great_expectations is required. Install it with: pip install great-expectations"
             ) from exc
 
+        self._expectations = expectations
         self._suite_name = suite_name
-        self._expectation_suite = expectation_suite
 
     def validate(self, dataframe: Any, context: Dict[str, Any] | None = None) -> ValidationResult:
         import great_expectations as gx
-        from great_expectations.dataset import PandasDataset
+        import pandas as pd
 
-        if not isinstance(dataframe, PandasDataset):
-            ge_df = gx.from_pandas(dataframe, expectation_suite=self._expectation_suite)
-        else:
-            ge_df = dataframe
+        if not isinstance(dataframe, pd.DataFrame):
+            try:
+                dataframe = dataframe.to_pandas()
+            except AttributeError:
+                raise TypeError("GreatExpectationsAdapter requires a pandas or polars DataFrame")
 
-        result = ge_df.validate(expectation_suite=self._expectation_suite, result_format="SUMMARY")
+        ctx = gx.get_context(mode="ephemeral")
+        suite = ctx.suites.add(gx.ExpectationSuite(
+            name=self._suite_name,
+            expectations=self._expectations,
+        ))
+        ds = ctx.data_sources.add_pandas(f"_ds_{self._suite_name}")
+        da = ds.add_dataframe_asset("_asset")
+        batch_def = da.add_batch_definition_whole_dataframe("_batch")
+        vd = ctx.validation_definitions.add(gx.ValidationDefinition(
+            name=f"_vd_{self._suite_name}",
+            data=batch_def,
+            suite=suite,
+        ))
+
+        result = vd.run(batch_parameters={"dataframe": dataframe})
 
         total = len(result.results)
         failed_results = [r for r in result.results if not r.success]
@@ -34,11 +49,20 @@ class GreatExpectationsAdapter(ValidationPort):
 
         failures = [
             CheckFailure(
-                check_name=r.expectation_config.expectation_type,
+                check_name=r.expectation_config.type,
                 message=str(r.result) if r.result else "",
                 column=r.expectation_config.kwargs.get("column"),
             )
             for r in failed_results
+        ]
+
+        assertions = [
+            {
+                "check": r.expectation_config.type,
+                "column": r.expectation_config.kwargs.get("column"),
+                "success": r.success,
+            }
+            for r in result.results
         ]
 
         return ValidationResult(
@@ -48,5 +72,6 @@ class GreatExpectationsAdapter(ValidationPort):
             checks_passed=passed,
             checks_failed=len(failed_results),
             failures=failures,
+            assertions=assertions,
             metadata={"engine": "pandas", "suite": self._suite_name},
         )
