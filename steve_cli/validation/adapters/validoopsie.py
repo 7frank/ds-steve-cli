@@ -33,10 +33,10 @@ class ValidoopsieAdapter(ValidationPort):
 
         severity_by_check: Dict[str, str] = {}
         for severity, check_fn in self._suite:
-            result = check_fn(vd)
-            check_name = result.__class__.__name__ if result is not None else None
-            if check_name:
-                severity_by_check[check_name] = severity
+            before = set(vd.results.keys())
+            check_fn(vd)
+            for new_key in set(vd.results.keys()) - before:
+                severity_by_check[new_key] = severity
 
         vd.validate()
 
