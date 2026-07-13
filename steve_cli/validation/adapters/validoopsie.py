@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+import logging
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 from steve_cli.validation.port import CheckFailure, ValidationPort, ValidationResult
 
+logger = logging.getLogger(__name__)
+
+SuiteEntry = Union[Tuple[str, Callable], Callable]
+
 
 class ValidoopsieAdapter(ValidationPort):
-    def __init__(self, suite: List[Callable] | None = None, **kwargs: Any):
+    def __init__(self, suite: List[SuiteEntry] | None = None, **kwargs: Any):
         try:
             import validoopsie  # noqa: F401
         except ImportError as exc:
@@ -14,15 +19,24 @@ class ValidoopsieAdapter(ValidationPort):
                 "validoopsie is required. Install it with: pip install validoopsie"
             ) from exc
 
-        self._suite = suite or []
+        self._suite: List[Tuple[str, Callable]] = []
+        for entry in (suite or []):
+            if isinstance(entry, tuple):
+                self._suite.append(entry)
+            else:
+                self._suite.append(("error", entry))
 
     def validate(self, dataframe: Any, context: Dict[str, Any] | None = None) -> ValidationResult:
         import validoopsie
 
         vd = validoopsie.Validate(dataframe)
 
-        for check_fn in self._suite:
-            check_fn(vd)
+        severity_by_check: Dict[str, str] = {}
+        for severity, check_fn in self._suite:
+            result = check_fn(vd)
+            check_name = result.__class__.__name__ if result is not None else None
+            if check_name:
+                severity_by_check[check_name] = severity
 
         vd.validate()
 
@@ -37,15 +51,24 @@ class ValidoopsieAdapter(ValidationPort):
                 check_name=name,
                 message=results[name]["result"].get("message", ""),
                 column=results[name].get("column"),
+                severity=severity_by_check.get(name, "error"),
             )
             for name in all_checks
             if name in failed_names
         ]
 
+        for f in failures:
+            msg = "%s [%s]: %s", f.check_name, f.column, f.message
+            if f.severity == "error":
+                logger.error(*msg)
+            elif f.severity == "warn":
+                logger.warning(*msg)
+            else:
+                logger.info(*msg)
+
         total = len(all_checks)
         failed = len(failures)
-
-        return ValidationResult(
+        result = ValidationResult(
             success=summary.get("passed", False),
             framework="validoopsie",
             checks_total=total,
@@ -54,3 +77,5 @@ class ValidoopsieAdapter(ValidationPort):
             failures=failures,
             metadata={"engine": "polars"},
         )
+
+        return result

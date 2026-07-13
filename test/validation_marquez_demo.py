@@ -14,9 +14,9 @@ TARGET_PATH = "demo/orders_clean.csv"
 
 def build_validator() -> ValidoopsieAdapter:
     suite = [
-        lambda vd: vd.NullValidation.ColumnNotBeNull("customer_id"),
-        lambda vd: vd.ValuesValidation.ColumnValuesToBeBetween("amount", min_value=0.01),
-        lambda vd: vd.StringValidation.LengthToBeEqualTo("country", value=2),
+        ("error", lambda vd: vd.NullValidation.ColumnNotBeNull("customer_id")),
+        ("warn",  lambda vd: vd.ValuesValidation.ColumnValuesToBeBetween("amount", min_value=0.01)),
+        ("info",  lambda vd: vd.StringValidation.LengthToBeEqualTo("country", value=2)),
     ]
     return ValidoopsieAdapter(suite=suite)
 
@@ -37,14 +37,8 @@ def run(get_storage):
 
     dq_validator = build_validator()
     result = dq_validator.validate(df)
-
-    print(f"\nValidation ({result.framework}): {'✓ passed' if result.success else '✗ failed'}")
-    print(f"  checks: {result.checks_passed}/{result.checks_total} passed")
-    if result.failures:
-        for f in result.failures:
-            print(f"  ✗ {f.check_name} [{f.column}]: {f.message}")
-
     src.validate(result)
+    result.raise_on_errors()
 
     df_clean = df.filter(
         pl.col("customer_id").is_not_null()

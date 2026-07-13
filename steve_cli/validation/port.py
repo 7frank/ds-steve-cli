@@ -10,6 +10,7 @@ class CheckFailure:
     check_name: str
     message: str
     column: str | None = None
+    severity: str = "error"
 
 
 @dataclass
@@ -21,6 +22,19 @@ class ValidationResult:
     checks_failed: int = 0
     failures: List[CheckFailure] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_errors(self) -> bool:
+        return any(f.severity == "error" for f in self.failures)
+
+    def raise_on_errors(self) -> ValidationResult:
+        if self.has_errors:
+            n = sum(1 for f in self.failures if f.severity == "error")
+            raise ValueError(
+                f"Validation failed: {n} error-level check(s) failed "
+                f"({self.checks_failed}/{self.checks_total} total)"
+            )
+        return self
 
     def to_openlineage_facet(self) -> Dict[str, Any]:
         return {
@@ -34,7 +48,7 @@ class ValidationResult:
                     "failed": self.checks_failed,
                 },
                 "failures": [
-                    {"check": f.check_name, "message": f.message, "column": f.column}
+                    {"check": f.check_name, "message": f.message, "column": f.column, "severity": f.severity}
                     for f in self.failures
                 ],
             },
