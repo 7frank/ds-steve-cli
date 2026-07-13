@@ -58,23 +58,30 @@ class LineageStorage:
                 self.__resolved = self._storage_or_factory  # type: ignore[assignment]
         return self.__resolved
 
+    @property
+    def _dataset_namespace(self) -> str | None:
+        s = self._storage
+        if hasattr(s, 'endpoint') and hasattr(s, 'bucket'):
+            return f"{s.endpoint}/{s.bucket}"
+        return None
+
     def put_file(self, local_path: str, path: str) -> None:
         self._storage.put_file(local_path, path)
-        self._session.record_write(path)
+        self._session.record_write(path, namespace=self._dataset_namespace)
 
     def get_file(self, path: str, local_path: str) -> None:
         self._storage.get_file(path, local_path)
-        self._session.record_read(path)
+        self._session.record_read(path, namespace=self._dataset_namespace)
 
     def put_bytes(self, data: bytes, path: str) -> None:
         self._storage.put_bytes(data, path)
         facets = _extract_facets(data, path)
-        self._session.record_write(path, facets or None)
+        self._session.record_write(path, facets or None, namespace=self._dataset_namespace)
 
     def get_bytes(self, path: str) -> bytes:
         data = self._storage.get_bytes(path)
         facets = _extract_facets(data, path)
-        self._session.record_read(path, facets or None)
+        self._session.record_read(path, facets or None, namespace=self._dataset_namespace)
         return data
 
     def read(self, path: str) -> DatasetHandle:

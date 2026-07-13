@@ -18,16 +18,21 @@ class LineageSession:
     _inputs: set[str] = field(default_factory=set)
     _outputs: set[str] = field(default_factory=set)
     _facets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    _dataset_namespaces: Dict[str, str] = field(default_factory=dict)
 
-    def record_read(self, dataset: str, facets: Dict[str, Any] | None = None) -> None:
+    def record_read(self, dataset: str, facets: Dict[str, Any] | None = None, namespace: str | None = None) -> None:
         self._inputs.add(dataset)
         if facets:
             self._facets.setdefault(dataset, {}).update(facets)
+        if namespace:
+            self._dataset_namespaces[dataset] = namespace
 
-    def record_write(self, dataset: str, facets: Dict[str, Any] | None = None) -> None:
+    def record_write(self, dataset: str, facets: Dict[str, Any] | None = None, namespace: str | None = None) -> None:
         self._outputs.add(dataset)
         if facets:
             self._facets.setdefault(dataset, {}).update(facets)
+        if namespace:
+            self._dataset_namespaces[dataset] = namespace
 
     def attach_facets(self, dataset: str, facets: Dict[str, Any]) -> None:
         self._facets.setdefault(dataset, {}).update(facets)
@@ -42,8 +47,8 @@ class LineageSession:
             namespace=self.namespace,
             run_id=self.run_id,
             state=state,
-            inputs=[DatasetRef(namespace=self.namespace, name=x, facets=self._facets.get(x, {})) for x in self._inputs],
-            outputs=[DatasetRef(namespace=self.namespace, name=x, facets=self._facets.get(x, {})) for x in self._outputs],
+            inputs=[DatasetRef(namespace=self._dataset_namespaces.get(x, self.namespace), name=x, facets=self._facets.get(x, {})) for x in self._inputs],
+            outputs=[DatasetRef(namespace=self._dataset_namespaces.get(x, self.namespace), name=x, facets=self._facets.get(x, {})) for x in self._outputs],
             run_facets=run_facets or {},
         )
 
