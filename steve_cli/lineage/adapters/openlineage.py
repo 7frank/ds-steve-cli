@@ -26,7 +26,7 @@ class OpenLineageAdapter(LineagePort):
         self._client = OpenLineageClient(transport=transport)
 
     def emit(self, event: LineageEvent) -> None:
-        from openlineage.client.event_v2 import Dataset, Job, Run, RunEvent, RunState
+        from openlineage.client.event_v2 import Dataset, InputDataset, Job, Run, RunEvent, RunState
         from openlineage.client.facet import (
             Assertion,
             ColumnMetric,
@@ -59,6 +59,10 @@ class OpenLineageAdapter(LineagePort):
                     storageLayer=st.get("storageLayer", "s3"),
                     fileFormat=st.get("fileFormat", ""),
                 )
+            return facets
+
+        def _build_input_facets(raw: dict) -> dict:
+            input_facets: dict = {}
             if "dataQualityFacet" in raw:
                 dq = raw["dataQualityFacet"]
                 assertions = [
@@ -66,20 +70,30 @@ class OpenLineageAdapter(LineagePort):
                     for f in dq.get("failures", [])
                 ]
                 if assertions:
-                    facets["dataQuality"] = DataQualityAssertionsDatasetFacet(assertions=assertions)
+                    input_facets["dataQualityAssertions"] = DataQualityAssertionsDatasetFacet(assertions=assertions)
             if "dataQualityMetrics" in raw:
                 m = raw["dataQualityMetrics"]
                 col_metrics = {
                     col: ColumnMetric(nullCount=metrics.get("nullCount"))
                     for col, metrics in m.get("columnMetrics", {}).items()
                 }
-                facets["dataQualityMetrics"] = DataQualityMetricsInputDatasetFacet(
+                input_facets["dataQualityMetrics"] = DataQualityMetricsInputDatasetFacet(
                     rowCount=m.get("rowCount"),
                     columnMetrics=col_metrics if col_metrics else None,
                 )
-            return facets
+            return input_facets
 
-        def _to_ol_dataset(ref: DatasetRef) -> Dataset:
+        def _to_ol_input(ref: DatasetRef) -> InputDataset:
+            raw = ref.facets or {}
+            input_facets = _build_input_facets(raw)
+            return InputDataset(
+                namespace=ref.namespace,
+                name=ref.name,
+                facets=_build_dataset_facets(raw),
+                inputFacets=input_facets if input_facets else None,
+            )
+
+        def _to_ol_output(ref: DatasetRef) -> Dataset:
             return Dataset(
                 namespace=ref.namespace,
                 name=ref.name,
@@ -91,8 +105,8 @@ class OpenLineageAdapter(LineagePort):
             eventTime=event.event_time,
             run=Run(runId=event.run_id, facets=run_facets),
             job=Job(namespace=event.namespace, name=event.job_name),
-            inputs=[_to_ol_dataset(d) for d in event.inputs],
-            outputs=[_to_ol_dataset(d) for d in event.outputs],
+            inputs=[_to_ol_input(d) for d in event.inputs],
+            outputs=[_to_ol_output(d) for d in event.outputs],
         )
 
         try:
