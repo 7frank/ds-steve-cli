@@ -88,3 +88,8 @@ target-version = ['py38']
 
 [tool.isort]
 profile = "black"
+
+[dependency-groups]
+dev = [
+    "great-expectations>=1.18.2",
+]

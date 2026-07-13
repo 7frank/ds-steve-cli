@@ -2127,6 +2127,11 @@ validoopsie = [
     { name = "validoopsie" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "great-expectations" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=22.0" },
@@ -2159,6 +2164,9 @@ requires-dist = [
     { name = "validoopsie", marker = "extra == 'validoopsie'", specifier = ">=0.1.0" },
 ]
 provides-extras = ["dev", "polars", "pandas", "lineage", "validoopsie", "great-expectations", "excel", "all"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "great-expectations", specifier = ">=1.18.2" }]
 
 [[package]]
 name = "tabulate"
