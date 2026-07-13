@@ -31,7 +31,7 @@ class S3Storage:
             endpoint_url=self.endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            config=Config(signature_version="s3v4"),
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
             region_name="us-east-1",
         )
 
@@ -69,6 +69,8 @@ class S3Storage:
 
     @staticmethod
     def _key(path: str) -> str:
+        if not path:
+            return ""
         return str(PurePosixPath(path).as_posix().lstrip("/"))
 
     def _object_location(self, path: str) -> str:
