@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
 from typing import Any, Callable, List, Union
 
 from steve_cli.storage.protocol import Storage
+
+GetStorage = Callable[..., "LineageStorage"]
 
 logger = logging.getLogger(__name__)
 
 
 class DatasetHandle:
-    def __init__(self, path: str, data: bytes, session: Any):
+    def __init__(self, path: str, data: bytes, session: Any, is_read: bool = False):
         self.data = data
         self._path = path
         self._session = session
+        self._is_read = is_read
 
     def describe(self, **column_descriptions: str) -> DatasetHandle:
         existing_fields = self._session._facets.get(self._path, {}).get("schema", {}).get("fields", [])
@@ -24,6 +28,8 @@ class DatasetHandle:
 
     def validate(self, result: Any) -> DatasetHandle:
         self._session.attach_validation(self._path, result)
+        if self._is_read:
+            result.raise_on_errors()
         return self
 
 
@@ -72,11 +78,47 @@ class LineageStorage:
         return data
 
     def read(self, path: str) -> DatasetHandle:
-        return DatasetHandle(path, self.get_bytes(path), self._session)
+        return DatasetHandle(path, self.get_bytes(path), self._session, is_read=True)
 
     def write(self, path: str, data: bytes) -> DatasetHandle:
         self.put_bytes(data, path)
         return DatasetHandle(path, data, self._session)
+
+    def read_df(self, path: str, parser: Callable, validator: Any = None) -> Any:
+        data = self.get_bytes(path)
+        handle = DatasetHandle(path, data, self._session, is_read=True)
+        df = parser(BytesIO(data))
+        if validator is not None:
+            result = validator.validate(df)
+            handle.validate(result)
+        return df
+
+    def read_csv(self, path: str, validator: Any = None, **kwargs: Any) -> Any:
+        import polars as pl
+        return self.read_df(path, lambda b: pl.read_csv(b, **kwargs), validator)
+
+    def read_parquet(self, path: str, validator: Any = None, **kwargs: Any) -> Any:
+        import polars as pl
+        return self.read_df(path, lambda b: pl.read_parquet(b, **kwargs), validator)
+
+    def read_excel(self, path: str, validator: Any = None, **kwargs: Any) -> Any:
+        import polars as pl
+        return self.read_df(path, lambda b: pl.read_excel(b, **kwargs), validator)
+
+    def write_df(self, path: str, df: Any, serializer: Callable) -> DatasetHandle:
+        data = serializer(df)
+        self.put_bytes(data, path)
+        return DatasetHandle(path, data, self._session)
+
+    def write_csv(self, path: str, df: Any, **kwargs: Any) -> DatasetHandle:
+        return self.write_df(path, df, lambda d: d.write_csv(**kwargs).encode())
+
+    def write_parquet(self, path: str, df: Any, **kwargs: Any) -> DatasetHandle:
+        def _to_bytes(d: Any) -> bytes:
+            buf = BytesIO()
+            d.write_parquet(buf, **kwargs)
+            return buf.getvalue()
+        return self.write_df(path, df, _to_bytes)
 
     def attach_facets(self, path: str, facets: dict) -> None:
         self._session.attach_facets(path, facets)

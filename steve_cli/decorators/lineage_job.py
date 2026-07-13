@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+import inspect
+from pathlib import Path
 from typing import Any, Callable
 
 from steve_cli.lineage.collector import make_session
@@ -15,7 +17,12 @@ def lineage_job(
     lineage_enabled: bool = True,
 ) -> Callable:
     def decorator(fn: Callable) -> Callable:
-        job_name = name or fn.__name__
+        if name:
+            job_name = name
+        else:
+            caller_file = inspect.getfile(fn)
+            stem = Path(caller_file).stem
+            job_name = f"{stem}.{fn.__name__}"
 
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -47,6 +54,12 @@ def lineage_job(
 
             session.complete()
             return result
+
+        if fn.__module__ == "__main__":
+            import logging
+            import os
+            logging.basicConfig(level=os.getenv("LOG_LEVEL", "WARNING"), format="%(levelname)s %(name)s: %(message)s")
+            wrapper()
 
         return wrapper
 
