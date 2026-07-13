@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -545,7 +546,7 @@ def _print_tree(node: Dict[str, Any], prefix: str = "", is_last: bool = True) ->
             _print_tree(child, prefix + extension, last)
 
 
-def _list_bucket(storage_kwargs: dict, label: str, bucket_name: str) -> None:
+def _list_bucket(storage_kwargs: dict, label: str, bucket_name: str) -> tuple:
     click.echo(f"  {click.style(label, fg='cyan')} ({bucket_name})")
     try:
         from steve_cli.storage import S3Storage
@@ -556,10 +557,12 @@ def _list_bucket(storage_kwargs: dict, label: str, bucket_name: str) -> None:
         else:
             tree = _build_tree(keys)
             _print_tree(tree, prefix="    ")
+        return storage, keys
     except EnvironmentError as e:
         click.echo(f"    ⚠️  {e}", err=True)
     except Exception as e:
         click.echo(f"    ❌ {e}", err=True)
+    return None, []
 
 
 @main.command("buckets")
@@ -610,7 +613,33 @@ def buckets(env_file: tuple):
         sys.exit(0)
 
     selected = next(o for o in options if o["label"] == choice)
-    _list_bucket(selected["kwargs"], selected["tier"], selected["bucket_name"])
+    storage, keys = _list_bucket(selected["kwargs"], selected["tier"], selected["bucket_name"])
+
+    if not storage or not keys:
+        return
+
+    file_choice = questionary.select(
+        "View a file (or press Esc to exit):",
+        choices=["(done)"] + keys,
+    ).ask()
+
+    if not file_choice or file_choice == "(done)":
+        return
+
+    click.echo(f"\n📄 {click.style(file_choice, fg='cyan')}\n")
+    try:
+        import tempfile
+        data = storage.get_bytes(file_choice)
+        suffix = Path(file_choice).suffix
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        if not shutil.which("vd"):
+            click.secho("visidata not found. Install it with: uv pip install 'steve-cli[visidata]'", fg="yellow")
+            return
+        subprocess.call(["vd", tmp_path])
+    except Exception as e:
+        click.secho(f"❌ Could not open file: {e}", fg="red", err=True)
 
 
 if __name__ == '__main__':
