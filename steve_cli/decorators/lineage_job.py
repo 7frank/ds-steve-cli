@@ -26,6 +26,10 @@ def lineage_job(
 
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            from dotenv import load_dotenv
+            load_dotenv(".env", override=False)
+            load_dotenv(".workspaces.env", override=False)
+
             session = make_session(
                 namespace=namespace,
                 job_name=job_name,
