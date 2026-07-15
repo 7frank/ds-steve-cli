@@ -8,11 +8,11 @@ help:
 	@echo "  next-version  Bump the patch version in pyproject.toml"
 	@echo "  build         Build the package"
 	@echo "  publish       Publish to PyPI"
-	@echo "  git-tag       Create a git tag for the current version
-  release       next-version + build + publish + git-tag"
+	@echo "  git-tag       Create a git tag for the current version"
+	@echo "  release       next-version + build + publish + git-tag"
 
 test:
-	uv run pytest tests/ -v
+	uv run --extra dev pytest tests/ -v
 
 next-version:
 	@current=$$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'); \
