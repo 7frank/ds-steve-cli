@@ -1,4 +1,4 @@
-.PHONY: help test next-version build publish release
+.PHONY: help test next-version build publish git-tag release
 
 help:
 	@echo "Usage: make [target]"
@@ -8,7 +8,8 @@ help:
 	@echo "  next-version  Bump the patch version in pyproject.toml"
 	@echo "  build         Build the package"
 	@echo "  publish       Publish to PyPI"
-	@echo "  release       next-version + build + publish"
+	@echo "  git-tag       Create a git tag for the current version
+  release       next-version + build + publish + git-tag"
 
 test:
 	uv run pytest tests/ -v
@@ -29,4 +30,9 @@ build:
 publish:
 	uv publish --username __token__ --password $$(pass pypi/token)
 
-release: next-version test build publish
+git-tag:
+	@version=$$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'); \
+	git tag -a "v$$version" -m "Release v$$version"; \
+	echo "Tagged: v$$version"
+
+release: next-version test build publish git-tag
