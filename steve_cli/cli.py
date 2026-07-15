@@ -300,6 +300,34 @@ def apps(ctx: click.Context, apps_file: Optional[Path]):
     ctx.invoke(apps_start, app_name=choice, apps_file=apps_file)
 
 
+@apps.command('status')
+@click.argument('app_name', required=False, default=None)
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+def apps_status(app_name: Optional[str], apps_file: Optional[Path]):
+    """Show status of one or all apps."""
+    config = AppsConfig(apps_file)
+    if not config.apps:
+        click.echo("❌ No apps found in apps.yaml")
+        return
+    apps_to_show = [a for a in config.apps if a.get('name') == app_name] if app_name else config.apps
+    if not apps_to_show:
+        click.echo(f"❌ App '{app_name}' not found", err=True)
+        sys.exit(1)
+    for app_data in apps_to_show:
+        name = app_data.get('name', 'unnamed')
+        port = app_data.get('port', '?')
+        pid = _get_running_pid(name)
+        if pid:
+            uf = _url_file(name)
+            url = uf.read_text().strip() if uf.exists() else f'http://localhost:{port}'
+            status = click.style('● running', fg='green')
+            click.echo(f"  {click.style(name, fg='blue', bold=True)}  {status}  {click.style(url, fg='cyan')}  (PID {pid})")
+        else:
+            status = click.style('○ stopped', fg='yellow')
+            click.echo(f"  {click.style(name, fg='blue', bold=True)}  {status}")
+
+
 @apps.command('ls')
 @click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
               help='Path to apps.yaml file (default: ./apps.yaml)')
