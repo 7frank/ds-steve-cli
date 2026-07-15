@@ -335,12 +335,31 @@ def apps_list(apps_file: Optional[Path]):
 
 
 @apps.command('start')
-@click.argument('app_name')
+@click.argument('app_name', required=False, default=None)
 @click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
               help='Path to apps.yaml file (default: ./apps.yaml)')
-def apps_start(app_name: str, apps_file: Optional[Path]):
+def apps_start(app_name: Optional[str], apps_file: Optional[Path]):
     """Start an app by name and register it with the auth-proxy."""
     config = AppsConfig(apps_file)
+    if app_name is None:
+        all_names = config.list_apps()
+        if not all_names:
+            click.echo("❌ No apps found in apps.yaml")
+            sys.exit(1)
+        choices = [
+            questionary.Choice(title=n, value=n, disabled="running")
+            if _get_running_pid(n) else questionary.Choice(title=n, value=n)
+            for n in all_names
+        ]
+        if all(c.disabled for c in choices):
+            click.echo("⚠️  All apps are already running")
+            return
+        app_name = questionary.select(
+            "Select an app to start:",
+            choices=choices,
+        ).ask()
+        if app_name is None:
+            sys.exit(0)
     app_def = config.get_app(app_name)
     if not app_def:
         available = config.list_apps()
@@ -426,12 +445,33 @@ def apps_start(app_name: str, apps_file: Optional[Path]):
 
 
 @apps.command('stop')
-@click.argument('app_name')
+@click.argument('app_name', required=False, default=None)
 @click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
               help='Path to apps.yaml file (default: ./apps.yaml)')
-def apps_stop(app_name: str, apps_file: Optional[Path]):
+def apps_stop(app_name: Optional[str], apps_file: Optional[Path]):
     """Stop a running app and deregister it from the auth-proxy."""
     session_name = _get_session_name()
+
+    if app_name is None:
+        config = AppsConfig(apps_file)
+        all_names = config.list_apps()
+        if not all_names:
+            click.echo("❌ No apps found in apps.yaml")
+            sys.exit(1)
+        choices = [
+            questionary.Choice(title=n, value=n)
+            if _get_running_pid(n) else questionary.Choice(title=n, value=n, disabled="stopped")
+            for n in all_names
+        ]
+        if all(c.disabled for c in choices):
+            click.echo("⚠️  No apps are running")
+            return
+        app_name = questionary.select(
+            "Select an app to stop:",
+            choices=choices,
+        ).ask()
+        if app_name is None:
+            sys.exit(0)
 
     pid = _get_running_pid(app_name)
     if not pid:
@@ -450,6 +490,77 @@ def apps_stop(app_name: str, apps_file: Optional[Path]):
     if session_name:
         _deregister_app(session_name, f"{APP_NAME_PREFIX}{app_name}")
         click.echo(f"🔌 Deregistered from auth-proxy")
+
+
+@apps.command('restart')
+@click.argument('app_name', required=False, default=None)
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+@click.pass_context
+def apps_restart(ctx: click.Context, app_name: Optional[str], apps_file: Optional[Path]):
+    """Restart a running app."""
+    if app_name is None:
+        config = AppsConfig(apps_file)
+        all_names = config.list_apps()
+        if not all_names:
+            click.echo("❌ No apps found in apps.yaml")
+            sys.exit(1)
+        choices = [
+            questionary.Choice(title=n, value=n)
+            if _get_running_pid(n) else questionary.Choice(title=n, value=n, disabled="stopped")
+            for n in all_names
+        ]
+        if all(c.disabled for c in choices):
+            click.echo("⚠️  No apps are running")
+            return
+        app_name = questionary.select(
+            "Select an app to restart:",
+            choices=choices,
+        ).ask()
+        if app_name is None:
+            sys.exit(0)
+    ctx.invoke(apps_stop, app_name=app_name, apps_file=apps_file)
+    ctx.invoke(apps_start, app_name=app_name, apps_file=apps_file)
+
+
+@apps.command('logs')
+@click.argument('app_name', required=False, default=None)
+@click.option('--apps-file', '-f', type=click.Path(exists=True, path_type=Path),
+              help='Path to apps.yaml file (default: ./apps.yaml)')
+@click.option('--lines', '-n', default=50, show_default=True, help='Number of lines to show initially')
+def apps_logs(app_name: Optional[str], apps_file: Optional[Path], lines: int):
+    """Tail the log file for an app."""
+    if app_name is None:
+        config = AppsConfig(apps_file)
+        all_names = config.list_apps()
+        if not all_names:
+            click.echo("❌ No apps found in apps.yaml")
+            sys.exit(1)
+        choices = [
+            questionary.Choice(title=n, value=n)
+            if (APPS_DIR / f"{n}.log").exists() else questionary.Choice(title=n, value=n, disabled="no logs")
+            for n in all_names
+        ]
+        if all(c.disabled for c in choices):
+            click.echo("⚠️  No log files found")
+            return
+        app_name = questionary.select(
+            "Select an app to view logs:",
+            choices=choices,
+        ).ask()
+        if app_name is None:
+            sys.exit(0)
+
+    log_file = APPS_DIR / f"{app_name}.log"
+    if not log_file.exists():
+        click.echo(f"❌ No log file found for '{app_name}' at {log_file}", err=True)
+        sys.exit(1)
+
+    click.echo(f"📄 Logs for {click.style(app_name, fg='blue', bold=True)} ({log_file}):\n")
+    try:
+        subprocess.call(["tail", f"-n{lines}", "-f", str(log_file)])
+    except KeyboardInterrupt:
+        pass
 
 
 SETUP_IGNORE = [".env.example", ".env.template"]
