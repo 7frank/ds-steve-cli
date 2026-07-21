@@ -86,18 +86,26 @@ def make_session(
 
         port: LineagePort = NullLineageAdapter()
     else:
-        url = os.getenv("OPENLINEAGE_URL", "http://localhost:5000/api/v1/lineage")
+        url = os.getenv("OPENLINEAGE_URL")
         prov = provider or os.getenv("LINEAGE_PROVIDER", "openlineage")
-        kwargs = {"url": url} if prov == "openlineage" else {}
-        try:
-            port = LineageRegistry.create(prov, **kwargs)
-        except Exception as exc:
+        if prov == "openlineage" and not url:
             import logging
             logging.getLogger(__name__).warning(
-                "Lineage disabled: could not initialize provider %r: %s", prov, exc
+                "Lineage disabled: OPENLINEAGE_URL is not set"
             )
             from .adapters.null import NullLineageAdapter
 
             port = NullLineageAdapter()
+        else:
+            kwargs = {"url": url} if prov == "openlineage" else {}
+            try:
+                port = LineageRegistry.create(prov, **kwargs)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Lineage disabled: could not initialize provider %r: %s", prov, exc
+                )
+                from .adapters.null import NullLineageAdapter
+                port = NullLineageAdapter()
 
     return LineageSession(namespace=ns, job_name=jn, port=port)
