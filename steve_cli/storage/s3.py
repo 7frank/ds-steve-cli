@@ -79,13 +79,13 @@ class S3Storage:
     def _handle_client_error(self, error: ClientError, path: str, operation: str) -> None:
         code = error.response["Error"]["Code"]
         if code == "AccessDenied":
-            logger.error("Access denied when %s: %s", operation, path)
+            logger.error("Access denied when %s: %s (BUCKET=%s)", operation, path, self.bucket)
         elif code == "NoSuchBucket":
             logger.error("Bucket not found: %s", self.bucket)
         elif code == "NoSuchKey":
-            logger.error("File not found: %s", path)
+            logger.error("File not found: %s while %s on BUCKET=%s", path, operation, self.bucket)
         else:
-            logger.error("Storage error during %s: %s", operation, error)
+            logger.error("Storage error during %s: %s (BUCKET=%s)", operation, error, self.bucket)
         raise EnvironmentError(f"S3 {operation} failed for {path}: {error.response['Error']['Code']}")
 
     def put_file(self, local_path: str, path: str) -> None:
