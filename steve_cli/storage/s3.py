@@ -83,7 +83,7 @@ class S3Storage:
         elif code == "NoSuchBucket":
             logger.error("Bucket not found: %s", self.bucket)
         elif code == "NoSuchKey":
-            logger.error("File not found: %s while %s on BUCKET=%s", path, operation, self.bucket)
+            logger.warning("File not found: %s while %s on BUCKET=%s", path, operation, self.bucket)
         else:
             logger.error("Storage error during %s: %s (BUCKET=%s)", operation, error, self.bucket)
         raise EnvironmentError(f"S3 {operation} failed for {path}: {error.response['Error']['Code']}")
