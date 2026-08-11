@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
+import re
 from io import BytesIO
 from typing import Any, Callable, List, Union
 
 from steve_cli.storage.protocol import Storage
 
 GetStorage = Callable[..., "LineageStorage"]
+
+
+def strip_medallion_postfix(name: str) -> str:
+    return re.sub(r'[-_](bronze|silver|gold)$', '', name, flags=re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +67,8 @@ class LineageStorage:
     def _dataset_namespace(self) -> str | None:
         s = self._storage
         if hasattr(s, 'endpoint') and hasattr(s, 'bucket'):
-            return f"{s.endpoint.rstrip('/')}/{s.bucket}"
+            name = strip_medallion_postfix(s.bucket)
+            return f"{s.endpoint.rstrip('/')}/{name}"
         return None
 
     def put_file(self, local_path: str, path: str) -> None:
