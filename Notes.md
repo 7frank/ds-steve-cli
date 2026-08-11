@@ -14,3 +14,10 @@
   If that doesn't work:
 
   uv cache clean && uv sync
+
+
+
+- dont set default lineage url and if none is set add a warning , so loacally we dont retry so often
+- publish new version
+
+- add repair feature that upgrades steve cli to latest and `uv sync`

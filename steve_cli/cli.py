@@ -781,5 +781,17 @@ def buckets(env_file: tuple):
         click.secho(f"❌ Could not open file: {e}", fg="red", err=True)
 
 
+@main.command("upgrade")
+def upgrade():
+    """Upgrade steve-cli to the latest version."""
+    click.echo(f"⬆️  Upgrading {click.style('steve-cli', fg='blue', bold=True)}...")
+    result = subprocess.run(
+        ["uv", "add", "steve-cli", "--upgrade-package", "steve-cli"],
+        env=os.environ.copy(),
+        check=False,
+    )
+    sys.exit(result.returncode)
+
+
 if __name__ == '__main__':
     main()
