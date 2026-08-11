@@ -40,10 +40,13 @@ def lineage_job(
             session.start()
 
             def get_storage(tier: str = "bronze", workspace: str | None = None) -> LineageStorage:
-                return LineageStorage(
+                ls = LineageStorage(
                     storage=lambda: S3Storage(tier=tier, workspace=workspace),
                     session=session,
                 )
+                if session.namespace in ("default", "unknown") and ls._dataset_namespace:
+                    session.namespace = ls._dataset_namespace
+                return ls
 
             try:
                 result = fn(*args, get_storage=get_storage, **kwargs)
