@@ -91,7 +91,9 @@ def make_session(
         if prov == "openlineage" and not url:
             import logging
             logging.getLogger(__name__).warning(
-                "Lineage disabled: OPENLINEAGE_URL is not set"
+                "Lineage disabled: OPENLINEAGE_URL is not set. "
+                "To enable lineage tracking, set OPENLINEAGE_URL "
+                "(e.g. http://localhost:5000/api/v1/lineage)."
             )
             from .adapters.null import NullLineageAdapter
 
