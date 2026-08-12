@@ -14,7 +14,7 @@ uv pip install -e .
 
 ### Install from GitHub
 
-`uv add steve-cli` 
+`uv add steve-cli`
 
 OR
 
@@ -22,7 +22,14 @@ OR
 uv add git+https://github.com/your-org/tilt-ts-4.git#subdirectory=apps/example-hehnke/packages/steve-cli
 ```
 
+### dev
 
+For local development add the following to your pyproj.toml which allows using the local copy instead of the one from the registry
+
+```toml
+[tool.uv.sources]
+steve-cli = { path = "../../packages/steve-cli", editable = true }
+```
 
 ## Usage
 
@@ -104,13 +111,13 @@ Running `steve extract-data` will:
 
 Steve automatically extracts metadata from files read or written via `MetadataRegistry`. The extractor is chosen by file extension — no configuration needed.
 
-| Extension | Extractor | Requires |
-|---|---|---|
-| `.parquet`, `.pq` | `ParquetExtractor` | `pip install steve-cli[polars]` |
-| `.csv`, `.tsv`, `.txt` | `CsvExtractor` | stdlib only |
-| `.json`, `.jsonl`, `.ndjson` | `JsonExtractor` | stdlib only |
-| `.xlsx`, `.xls`, `.xlsm` | `ExcelExtractor` | `pip install steve-cli[excel]` |
-| anything else | `GenericExtractor` | stdlib only |
+| Extension                    | Extractor          | Requires                        |
+| ---------------------------- | ------------------ | ------------------------------- |
+| `.parquet`, `.pq`            | `ParquetExtractor` | `pip install steve-cli[polars]` |
+| `.csv`, `.tsv`, `.txt`       | `CsvExtractor`     | stdlib only                     |
+| `.json`, `.jsonl`, `.ndjson` | `JsonExtractor`    | stdlib only                     |
+| `.xlsx`, `.xls`, `.xlsm`     | `ExcelExtractor`   | `pip install steve-cli[excel]`  |
+| anything else                | `GenericExtractor` | stdlib only                     |
 
 ### Adding a custom extractor
 
@@ -172,10 +179,9 @@ black steve_cli/
 isort steve_cli/
 ```
 
-
-
 # use cli
-source .venv/bin/activate 
+
+source .venv/bin/activate
 steve
 
 #
