@@ -40,29 +40,44 @@ class TrinoStorage:
     def _iceberg_catalog(self):
         if self.__iceberg_catalog is None:
             from pyiceberg.catalog.rest import RestCatalog
+            from pyiceberg.io import load_file_io
+            from pyiceberg.table import Table
 
             # FIXME: Interim workaround — pyiceberg cannot use Lakekeeper's remote signing
             # endpoint when running outside the cluster (hostname 'lakekeeper' doesn't resolve
-            # locally). We pass S3 credentials directly so pyiceberg writes to MinIO without
-            # going through the signer. Remove once Increment 5 (STS credential vending) is
-            # wired — at that point Lakekeeper vends short-lived S3 creds via /credentials
-            # and pyiceberg uses those automatically without needing explicit keys here.
+            # locally). We subclass RestCatalog to inject our local signer URI after pyiceberg
+            # merges table config (which overwrites s3.signer.uri with the internal hostname).
+            # Remove once Increment 5 (STS credential vending) is wired.
             tier = self.schema.rsplit("_", 1)[-1].upper()
-            s3_props = {
+            lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
+            s3_overrides = {
                 "s3.endpoint": os.getenv("S3_ENDPOINT", "http://minio:9000"),
                 "s3.access-key-id": os.getenv(f"{tier}_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", ""),
                 "s3.secret-access-key": os.getenv(f"{tier}_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", ""),
                 "s3.path-style-access": "true",
-            }
+                "s3.signer.uri": lakekeeper_base,
+            } if self._lakekeeper_endpoint else {}
 
-            catalog = RestCatalog(
+            class _PatchedRestCatalog(RestCatalog):
+                def _response_to_table(self_, identifier_tuple, table_response):
+                    merged = {**table_response.metadata.properties, **table_response.config, **s3_overrides, "uri": lakekeeper_base}
+                    return Table(
+                        identifier=identifier_tuple,
+                        metadata_location=table_response.metadata_location,
+                        metadata=table_response.metadata,
+                        io=load_file_io(merged, table_response.metadata_location),
+                        catalog=self_,
+                        config=table_response.config,
+                    )
+
+            catalog = _PatchedRestCatalog(
                 "lakekeeper",
-                uri=self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog",
+                uri=lakekeeper_base,
                 warehouse=self._lakekeeper_warehouse,
-                **s3_props,
+                **s3_overrides,
             )
             if self._lakekeeper_endpoint:
-                catalog.uri = self._lakekeeper_endpoint
+                catalog.uri = lakekeeper_base
             self.__iceberg_catalog = catalog
         return self.__iceberg_catalog
 
