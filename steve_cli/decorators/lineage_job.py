@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from steve_cli.lineage.collector import make_session
 from steve_cli.storage.s3 import S3Storage
+from steve_cli.storage.trino import TrinoStorage
 from steve_cli.lineage.storage import LineageStorage
 
 
@@ -48,8 +49,14 @@ def lineage_job(
                     session.namespace = ls._dataset_namespace
                 return ls
 
+            def get_tables(tier: str = "bronze", workspace: str | None = None) -> LineageStorage:
+                return LineageStorage(
+                    storage=lambda: TrinoStorage(tier=tier, workspace=workspace),
+                    session=session,
+                )
+
             try:
-                result = fn(*args, get_storage=get_storage, **kwargs)
+                result = fn(*args, get_storage=get_storage, get_tables=get_tables, **kwargs)
             except Exception as exc:
                 session.fail(exc)
                 import sys

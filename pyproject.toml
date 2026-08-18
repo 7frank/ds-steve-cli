@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "steve-cli"
-version = "0.3.20"
+version = "0.4.0"
 description = "A simple CLI tool to run jobs from jobs.yaml with proper environment setup"
 readme = "README.md"
 license = {text = "MIT"}
@@ -59,6 +59,12 @@ great-expectations = [
 ]
 excel = [
     "openpyxl>=3.1.0",
+]
+trino = [
+    "trino>=0.330",
+    "pyarrow>=17.0.0",
+    "requests>=2.31.0",
+    "pyiceberg[s3]>=0.7.0",
 ]
 visidata = [
     "visidata>=3.0",

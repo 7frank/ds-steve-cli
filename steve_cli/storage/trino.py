@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import io
+import logging
+import os
+import time
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
+
+logger = logging.getLogger(__name__)
+
+
+def _derive_schema(tier: str, workspace: str | None) -> str | None:
+    if workspace:
+        prefix = workspace.lower().replace("-", "_")
+        return f"ws_{prefix}_{tier.lower()}"
+    return None
+
+
+class TrinoStorage:
+    def __init__(self, tier: str = "bronze", workspace: str | None = None):
+        self.host = os.environ["TRINO_HOST"]
+        self.port = int(os.getenv("TRINO_PORT", "8080"))
+        self.catalog = os.getenv("TRINO_CATALOG", "minio")
+        self.schema = _derive_schema(tier, workspace) or os.environ["TRINO_SCHEMA"]
+        self.user = os.getenv("TRINO_USER", "admin")
+        self._base = f"http://{self.host}:{self.port}"
+        self._lakekeeper_url = os.getenv("LAKEKEEPER_URL", "http://lakekeeper:8181/catalog")
+        self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", "minio")
+        self.__iceberg_catalog = None
+
+    @property
+    def _iceberg_catalog(self):
+        if self.__iceberg_catalog is None:
+            from pyiceberg.catalog.rest import RestCatalog
+            self.__iceberg_catalog = RestCatalog(
+                "lakekeeper",
+                uri=self._lakekeeper_url,
+                warehouse=self._lakekeeper_warehouse,
+            )
+        return self.__iceberg_catalog
+
+    def _execute(self, sql: str) -> list[dict]:
+        headers = {
+            "X-Trino-User": self.user,
+            "X-Trino-Catalog": self.catalog,
+            "X-Trino-Schema": self.schema,
+        }
+        resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        rows: list[dict] = []
+        while True:
+            if "data" in data and "columns" in data:
+                col_names = [c["name"] for c in data["columns"]]
+                for row in data["data"]:
+                    rows.append(dict(zip(col_names, row)))
+            next_uri = data.get("nextUri")
+            if not next_uri:
+                break
+            time.sleep(0.1)
+            resp = requests.get(next_uri, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        return rows
+
+    @staticmethod
+    def _table_name(path: str) -> str:
+        return path.strip("/").replace("/", "_").replace(".", "_")
+
+    def list(self, prefix: str = "") -> list[str]:
+        rows = self._execute(f"SHOW TABLES FROM {self.catalog}.{self.schema}")
+        tables = [r["Table"] for r in rows]
+        if prefix:
+            clean = prefix.strip("/")
+            tables = [t for t in tables if t.startswith(clean)]
+        return tables
+
+    def list_all(self) -> list[str]:
+        return self.list()
+
+    def get_bytes(self, path: str) -> bytes:
+        rows = self._execute(f"SELECT * FROM {self.catalog}.{self.schema}.{self._table_name(path)}")
+        if not rows:
+            return b""
+        arrow_table = pa.Table.from_pylist(rows)
+        buf = io.BytesIO()
+        pq.write_table(arrow_table, buf)
+        return buf.getvalue()
+
+    def get_file(self, path: str, local_path: str) -> None:
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(local_path).write_bytes(self.get_bytes(path))
+
+    def put_bytes(self, data: bytes, path: str) -> None:
+        from pyiceberg.exceptions import NoSuchTableError
+
+        arrow_table = pq.read_table(io.BytesIO(data))
+        table_id = f"{self.schema}.{self._table_name(path)}"
+        catalog = self._iceberg_catalog
+
+        try:
+            iceberg_table = catalog.load_table(table_id)
+            iceberg_table.append(arrow_table)
+        except NoSuchTableError:
+            from pyiceberg.schema import Schema
+            from pyiceberg.types import (
+                BinaryType,
+                BooleanType,
+                DateType,
+                DoubleType,
+                FloatType,
+                IntegerType,
+                LongType,
+                NestedField,
+                StringType,
+                TimestampType,
+            )
+
+            _PYARROW_TO_ICEBERG = {
+                pa.bool_(): BooleanType(),
+                pa.int32(): IntegerType(),
+                pa.int64(): LongType(),
+                pa.float32(): FloatType(),
+                pa.float64(): DoubleType(),
+                pa.large_utf8(): StringType(),
+                pa.utf8(): StringType(),
+                pa.large_binary(): BinaryType(),
+                pa.binary(): BinaryType(),
+                pa.date32(): DateType(),
+                pa.timestamp("us"): TimestampType(),
+                pa.timestamp("us", tz="UTC"): TimestampType(),
+            }
+
+            fields = []
+            for i, field in enumerate(arrow_table.schema):
+                iceberg_type = _PYARROW_TO_ICEBERG.get(field.type, StringType())
+                fields.append(NestedField(field_id=i + 1, name=field.name, field_type=iceberg_type, required=not field.nullable))
+
+            iceberg_schema = Schema(*fields)
+            iceberg_table = catalog.create_table(table_id, schema=iceberg_schema)
+            iceberg_table.append(arrow_table)
+
+        logger.info("Written %d rows to %s", len(arrow_table), table_id)
+
+    def put_file(self, local_path: str, path: str) -> None:
+        self.put_bytes(Path(local_path).read_bytes(), path)
