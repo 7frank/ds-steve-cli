@@ -55,14 +55,18 @@ def lineage_job(
                     session=session,
                 )
 
+            sig = inspect.signature(fn)
+            available = {"get_storage": get_storage, "get_tables": get_tables}
+            injectable = {k: v for k, v in available.items() if k in sig.parameters}
+
             try:
-                result = fn(*args, get_storage=get_storage, get_tables=get_tables, **kwargs)
+                result = fn(*args, **injectable, **kwargs)
             except Exception as exc:
                 session.fail(exc)
                 import sys
+                import click
                 from steve_cli.validation.port import DataQualityError
                 if isinstance(exc, (DataQualityError, EnvironmentError)):
-                    import click
                     click.secho(f"ERROR {exc}", fg="red", bold=True, err=True)
                     sys.exit(1)
                 raise

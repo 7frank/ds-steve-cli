@@ -64,7 +64,8 @@ trino = [
     "trino>=0.330",
     "pyarrow>=17.0.0",
     "requests>=2.31.0",
-    "pyiceberg[s3]>=0.7.0",
+    "pyiceberg>=0.7.0",
+    "s3fs>=2024.1.0",
 ]
 visidata = [
     "visidata>=3.0",

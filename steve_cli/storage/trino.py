@@ -22,13 +22,17 @@ def _derive_schema(tier: str, workspace: str | None) -> str | None:
 
 class TrinoStorage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
-        self.host = os.environ["TRINO_HOST"]
-        self.port = int(os.getenv("TRINO_PORT", "8080"))
+        trino_endpoint = os.getenv("TRINO_ENDPOINT")
+        if not trino_endpoint:
+            raise EnvironmentError("TRINO_ENDPOINT is not set — Trino is not available in this environment")
         self.catalog = os.getenv("TRINO_CATALOG", "minio")
-        self.schema = _derive_schema(tier, workspace) or os.environ["TRINO_SCHEMA"]
+        resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
+        self.schema = _derive_schema(tier, resolved_workspace) or os.environ.get("TRINO_SCHEMA", "")
+        if not self.schema:
+            raise EnvironmentError("TRINO_SCHEMA is not set and no WORKSPACE_NAME or workspace was provided")
         self.user = os.getenv("TRINO_USER", "admin")
-        self._base = f"http://{self.host}:{self.port}"
-        self._lakekeeper_url = os.getenv("LAKEKEEPER_URL", "http://lakekeeper:8181/catalog")
+        self._base = trino_endpoint.rstrip("/")
+        self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT")
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", "minio")
         self.__iceberg_catalog = None
 
@@ -36,11 +40,30 @@ class TrinoStorage:
     def _iceberg_catalog(self):
         if self.__iceberg_catalog is None:
             from pyiceberg.catalog.rest import RestCatalog
-            self.__iceberg_catalog = RestCatalog(
+
+            # FIXME: Interim workaround — pyiceberg cannot use Lakekeeper's remote signing
+            # endpoint when running outside the cluster (hostname 'lakekeeper' doesn't resolve
+            # locally). We pass S3 credentials directly so pyiceberg writes to MinIO without
+            # going through the signer. Remove once Increment 5 (STS credential vending) is
+            # wired — at that point Lakekeeper vends short-lived S3 creds via /credentials
+            # and pyiceberg uses those automatically without needing explicit keys here.
+            tier = self.schema.rsplit("_", 1)[-1].upper()
+            s3_props = {
+                "s3.endpoint": os.getenv("S3_ENDPOINT", "http://minio:9000"),
+                "s3.access-key-id": os.getenv(f"{tier}_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", ""),
+                "s3.secret-access-key": os.getenv(f"{tier}_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", ""),
+                "s3.path-style-access": "true",
+            }
+
+            catalog = RestCatalog(
                 "lakekeeper",
-                uri=self._lakekeeper_url,
+                uri=self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog",
                 warehouse=self._lakekeeper_warehouse,
+                **s3_props,
             )
+            if self._lakekeeper_endpoint:
+                catalog.uri = self._lakekeeper_endpoint
+            self.__iceberg_catalog = catalog
         return self.__iceberg_catalog
 
     def _execute(self, sql: str) -> list[dict]:
@@ -95,12 +118,22 @@ class TrinoStorage:
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
         Path(local_path).write_bytes(self.get_bytes(path))
 
+    def _ensure_namespace(self) -> None:
+        from pyiceberg.exceptions import NamespaceAlreadyExistsError
+        try:
+            self._iceberg_catalog.create_namespace(self.schema)
+            logger.info("Created namespace %s", self.schema)
+        except NamespaceAlreadyExistsError:
+            pass
+
     def put_bytes(self, data: bytes, path: str) -> None:
         from pyiceberg.exceptions import NoSuchTableError
 
         arrow_table = pq.read_table(io.BytesIO(data))
         table_id = f"{self.schema}.{self._table_name(path)}"
         catalog = self._iceberg_catalog
+
+        self._ensure_namespace()
 
         try:
             iceberg_table = catalog.load_table(table_id)
