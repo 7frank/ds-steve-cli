@@ -33,7 +33,8 @@ class TrinoStorage:
         self.user = os.getenv("TRINO_USER", "admin")
         self._base = trino_endpoint.rstrip("/")
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT")
-        self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", "minio")
+        default_warehouse = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
+        self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_warehouse)
         self.__iceberg_catalog = None
 
     @property

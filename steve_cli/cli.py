@@ -781,6 +781,99 @@ def buckets(env_file: tuple):
         click.secho(f"❌ Could not open file: {e}", fg="red", err=True)
 
 
+def _list_trino_tables(storage_kwargs: dict, label: str) -> tuple:
+    click.echo(f"  {click.style(label, fg='cyan')}")
+    try:
+        from steve_cli.storage.trino import TrinoStorage
+        storage = TrinoStorage(**storage_kwargs)
+        tables = storage.list()
+        if not tables:
+            click.echo("    (no tables)")
+        else:
+            for t in tables:
+                click.echo(f"    ├── {t}")
+        return storage, tables
+    except EnvironmentError as e:
+        click.echo(f"    ⚠️  {e}", err=True)
+    except Exception as e:
+        click.echo(f"    ❌ {e}", err=True)
+    return None, []
+
+
+@main.command("tables")
+@click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
+              help='Path to .env file(s). Can be specified multiple times. Defaults to .env and .workspaces.env')
+def tables(env_file: tuple):
+    """List Iceberg tables via Trino and view their contents."""
+    if not os.getenv("TRINO_ENDPOINT"):
+        click.secho("TRINO_ENDPOINT is not set — Trino is not available.", fg="yellow")
+        return
+
+    cwd = Path.cwd()
+    env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
+    for ef in env_files:
+        load_dotenv(ef)
+
+    tiers = ["bronze", "silver", "gold"]
+    options: List[Dict[str, Any]] = []
+
+    bare_tiers = [t for t in tiers if os.getenv(f"{t.upper()}_ACCESS_KEY")]
+    for tier in bare_tiers:
+        options.append({
+            "label": f"default / {tier}",
+            "kwargs": {"tier": tier},
+        })
+
+    for ws in _detect_workspaces():
+        for tier in tiers:
+            if not os.getenv(f"{ws}_ACCESS_KEY_{tier.upper()}") and not os.getenv(f"{ws}_ACCESS_KEY"):
+                continue
+            options.append({
+                "label": f"{ws} / {tier}",
+                "kwargs": {"tier": tier, "workspace": ws.lower().replace("_", "-")},
+            })
+
+    if not options:
+        click.echo("No Trino storage env variables found (expected: TRINO_ENDPOINT + BRONZE_ACCESS_KEY or {WORKSPACE}_ACCESS_KEY).")
+        return
+
+    choice = questionary.select(
+        "Select a schema to list:",
+        choices=[o["label"] for o in options],
+    ).ask()
+
+    if choice is None:
+        sys.exit(0)
+
+    selected = next(o for o in options if o["label"] == choice)
+    storage, table_names = _list_trino_tables(selected["kwargs"], selected["label"])
+
+    if not storage or not table_names:
+        return
+
+    table_choice = questionary.select(
+        "View a table (or press Esc to exit):",
+        choices=["(done)"] + table_names,
+    ).ask()
+
+    if not table_choice or table_choice == "(done)":
+        return
+
+    click.echo(f"\n📊 {click.style(table_choice, fg='cyan')}\n")
+    try:
+        import tempfile
+        data = storage.get_bytes(table_choice)
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        if not shutil.which("vd"):
+            click.secho("visidata not found. Install it with: uv pip install 'steve-cli[visidata]'", fg="yellow")
+            return
+        subprocess.call(["vd", tmp_path])
+    except Exception as e:
+        click.secho(f"❌ Could not open table: {e}", fg="red", err=True)
+
+
 @main.command("upgrade")
 def upgrade():
     """Upgrade steve-cli to the latest version."""
