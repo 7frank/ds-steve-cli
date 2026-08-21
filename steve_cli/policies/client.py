@@ -19,7 +19,7 @@ class PolicyClient:
         self.endpoint = (endpoint or os.environ.get("PCP_ENDPOINT", "http://policy-control-plane:3010")).rstrip("/")
         self.token = token or os.environ.get("PCP_TOKEN", "")
 
-    def _trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def __trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f"{self.endpoint}/api/trpc/{path}"
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         if method == "query":
@@ -31,6 +31,15 @@ class PolicyClient:
         if "error" in data:
             raise RuntimeError(f"tRPC error on {path}: {data['error']}")
         return data.get("result", {}).get("data", data.get("result", {}))
+
+    def _trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
+        try:
+            return self.__trpc(method, path, payload)
+        except httpx.ConnectError as e:
+            raise EnvironmentError(
+                f"Cannot reach Policy Control Plane at {self.endpoint} — "
+                f"set PCP_ENDPOINT in your .env"
+            ) from e
 
     def register_pdp(self, name: str, endpoint: str, pdp_type: str = "opa", is_default: bool = True) -> dict:
         return self._trpc("mutation", "pdp.register", {
