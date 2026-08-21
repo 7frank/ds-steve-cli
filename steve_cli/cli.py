@@ -874,6 +874,33 @@ def tables(env_file: tuple):
         click.secho(f"❌ Could not open table: {e}", fg="red", err=True)
 
 
+@main.group()
+def policies():
+    """Manage and apply access policies via the Policy Control Plane."""
+    pass
+
+
+@policies.command("apply")
+@click.option('--file', '-f', type=click.Path(path_type=Path),
+              help='Path to policies YAML file (default: ./policies/access.yaml)')
+def policies_apply(file: Path | None):
+    """Apply access policies from a YAML file to the Policy Control Plane."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+
+    from steve_cli.policies import PolicyClient
+    policies_file = Path(file) if file else None
+    try:
+        PolicyClient().apply_from_file(policies_file)
+        click.secho("Policies applied successfully.", fg="green")
+    except FileNotFoundError as e:
+        click.secho(str(e), fg="red", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+
+
 @main.command("upgrade")
 def upgrade():
     """Upgrade steve-cli to the latest version."""
