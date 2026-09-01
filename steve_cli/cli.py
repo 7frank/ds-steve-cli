@@ -913,5 +913,9 @@ def upgrade():
     sys.exit(result.returncode)
 
 
+from steve_cli.ontology import ontology
+main.add_command(ontology)
+
+
 if __name__ == '__main__':
     main()
