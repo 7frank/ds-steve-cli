@@ -25,6 +25,11 @@ class LineageRegistry:
     @classmethod
     def create(cls, name: str | None = None, **kwargs: Any) -> LineagePort:
         provider = name or os.getenv("LINEAGE_PROVIDER", "openlineage")
+        if "+" in provider:
+            from .adapters.composite import CompositeLineageAdapter
+            parts = [p.strip() for p in provider.split("+")]
+            adapters = [cls.get(p)(**kwargs) for p in parts]
+            return CompositeLineageAdapter(adapters)
         return cls.get(provider)(**kwargs)
 
     @classmethod
@@ -45,6 +50,10 @@ def _register_defaults() -> None:
         LineageRegistry.register("openlineage", OpenLineageAdapter)
     except ImportError:
         LineageRegistry.register("openlineage", NullLineageAdapter)
+
+    from .adapters.dataproductregistry import RegistryLineageAdapter
+
+    LineageRegistry.register("dataproductregistry", RegistryLineageAdapter)
 
 
 _register_defaults()
