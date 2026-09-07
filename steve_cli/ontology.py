@@ -13,15 +13,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import click
 import requests
 import yaml
-
-
-def _get_registry_url() -> str:
-    return os.getenv("REGISTRY_URL", "http://localhost:8765")
 
 
 def _get_token() -> str:
@@ -61,7 +56,7 @@ def _infer_type(data: dict) -> str:
 def _compile(
     root_uri: str,
     binding_uri: str,
-    base_prefix: Optional[str],
+    base_prefix: str | None,
     registry_url: str,
     token: str,
 ) -> dict:
@@ -83,7 +78,6 @@ def _compile(
 @click.group("ontology")
 def ontology():
     """Manage VKG ontology packages and compile artifacts."""
-    pass
 
 
 @ontology.command("register")
@@ -120,7 +114,7 @@ def register_cmd(file: Path, registry_url: str):
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Write artifacts to this directory")
-def compile_cmd(root: str, binding: str, base_prefix: Optional[str], registry_url: str, output_dir: Optional[Path]):
+def compile_cmd(root: str, binding: str, base_prefix: str | None, registry_url: str, output_dir: Path | None):
     """Compile VKG artifacts from registered packages."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
@@ -220,6 +214,7 @@ def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: boo
         ["kubectl", "patch", "configmap", configmap, "-n", namespace, "--type=merge", "-p", json.dumps(patch)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         click.secho(f"kubectl patch failed: {result.stderr}", fg="red", err=True)
@@ -234,6 +229,7 @@ def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: boo
         ["kubectl", "rollout", "restart", "deployment/ontop", "-n", namespace],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         click.secho(f"kubectl rollout restart failed: {result.stderr}", fg="red", err=True)
@@ -246,6 +242,7 @@ def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: boo
             ["kubectl", "rollout", "status", "deployment/ontop", "-n", namespace, "--timeout=10s"],
             capture_output=True,
             text=True,
+            check=False,
         )
         if res.returncode == 0:
             click.secho("✓ Ontop rollout complete", fg="green")
@@ -264,9 +261,9 @@ def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: boo
 @click.option("--no-restart", is_flag=True, default=False, help="Patch ConfigMap but skip rollout restart")
 @click.option("--frozen", is_flag=True, default=False, help="Skip if ontology.lock.yaml is current")
 def push_cmd(
-    root: Optional[str],
-    binding: Optional[str],
-    base_prefix: Optional[str],
+    root: str | None,
+    binding: str | None,
+    base_prefix: str | None,
     registry_url: str,
     namespace: str,
     configmap: str,
