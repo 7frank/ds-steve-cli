@@ -148,32 +148,67 @@ def compile_cmd(root: str, binding: str, base_prefix: Optional[str], registry_ur
         click.secho(f"  Artifacts written to {output_dir}", fg="cyan")
 
 
-@ontology.command("push")
-@click.option("--root", required=True, help="Root concept package URI")
-@click.option("--binding", required=True, help="Binding package URI")
-@click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-@click.option("--namespace", "-n", envvar="KUBE_NAMESPACE", default="jambit-data-stack-dev", show_default=True)
-@click.option("--configmap", envvar="ONTOP_CONFIGMAP", default="ontop-vkg-artifacts", show_default=True)
-@click.option("--no-restart", is_flag=True, default=False, help="Patch ConfigMap but skip rollout restart")
-def push_cmd(
-    root: str,
-    binding: str,
-    base_prefix: Optional[str],
+def _workspace_push(
+    manifest: dict,
+    cwd: Path,
     registry_url: str,
-    namespace: str,
-    configmap: str,
-    no_restart: bool,
-):
-    """Compile VKG artifacts and push them to the Ontop ConfigMap, then restart Ontop."""
-    from dotenv import load_dotenv
-    load_dotenv(".env", override=False)
-    load_dotenv(".workspaces.env", override=False)
+    token: str,
+) -> dict:
+    all_paths = manifest.get("packages", []) + manifest.get("bindings", [])
+    package_files = []
+    for path in all_paths:
+        full = cwd / path
+        if not full.exists():
+            click.secho(f"File not found: {full}", fg="red", err=True)
+            sys.exit(1)
+        package_files.append({"path": path, "content": full.read_text()})
 
-    token = _get_token()
-    click.echo(f"Compiling {root} × {binding} …")
-    artifact = _compile(root, binding, base_prefix, registry_url, token)
+    payload = {
+        "manifest": manifest,
+        "package_files": package_files,
+    }
+    r = requests.post(
+        f"{registry_url}/api/v1/workspace/push",
+        json=payload,
+        headers=_headers(token),
+        timeout=60,
+    )
+    if r.status_code != 200:
+        click.secho(f"Workspace push failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
+        sys.exit(1)
+    return r.json()
 
+
+def _write_lock(artifact: dict, manifest: dict, lock_path: Path) -> None:
+    import hashlib
+    from datetime import datetime, timezone
+
+    compile_cfg = manifest.get("compile", {})
+    lock = {
+        "compiled_at": datetime.now(timezone.utc).isoformat(),
+        "root": compile_cfg.get("root"),
+        "binding": compile_cfg.get("binding"),
+        "manifest": artifact.get("manifest", {}),
+        "artifacts": {
+            "ontology_ttl_hash": "sha256:" + hashlib.sha256(artifact["ontology_ttl"].encode()).hexdigest(),
+            "mappings_obda_hash": "sha256:" + hashlib.sha256(artifact["mappings_obda"].encode()).hexdigest(),
+        },
+    }
+    lock_path.write_text(yaml.dump(lock, default_flow_style=False))
+
+
+def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
+    if not lock_path.exists():
+        return False
+    lock = yaml.safe_load(lock_path.read_text()) or {}
+    compile_cfg = manifest.get("compile", {})
+    return (
+        lock.get("root") == compile_cfg.get("root")
+        and lock.get("binding") == compile_cfg.get("binding")
+    )
+
+
+def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: bool) -> None:
     patch = {
         "data": {
             "ontology.ttl": artifact["ontology_ttl"],
@@ -217,3 +252,66 @@ def push_cmd(
             return
         time.sleep(5)
     click.secho("⚠ Timed out waiting for Ontop rollout", fg="yellow", err=True)
+
+
+@ontology.command("push")
+@click.option("--root", default=None, help="Root concept package URI (overrides ontology.yaml)")
+@click.option("--binding", default=None, help="Binding package URI (overrides ontology.yaml)")
+@click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
+@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--namespace", "-n", envvar="KUBE_NAMESPACE", default="jambit-data-stack-dev", show_default=True)
+@click.option("--configmap", envvar="ONTOP_CONFIGMAP", default="ontop-vkg-artifacts", show_default=True)
+@click.option("--no-restart", is_flag=True, default=False, help="Patch ConfigMap but skip rollout restart")
+@click.option("--frozen", is_flag=True, default=False, help="Skip if ontology.lock.yaml is current")
+def push_cmd(
+    root: Optional[str],
+    binding: Optional[str],
+    base_prefix: Optional[str],
+    registry_url: str,
+    namespace: str,
+    configmap: str,
+    no_restart: bool,
+    frozen: bool,
+):
+    """Compile VKG artifacts and push them to the Ontop ConfigMap, then restart Ontop.
+
+    With no arguments, reads ontology.yaml from the current directory.
+    """
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
+
+    token = _get_token()
+    cwd = Path.cwd()
+
+    if root and binding:
+        click.echo(f"Compiling {root} × {binding} …")
+        artifact = _compile(root, binding, base_prefix, registry_url, token)
+    else:
+        manifest_path = cwd / "ontology.yaml"
+        if not manifest_path.exists():
+            click.secho("No --root/--binding provided and no ontology.yaml found in current directory.", fg="red", err=True)
+            sys.exit(1)
+        manifest = yaml.safe_load(manifest_path.read_text())
+        if base_prefix:
+            manifest.setdefault("compile", {})["base_prefix"] = base_prefix
+
+        lock_path = cwd / "ontology.lock.yaml"
+        if frozen and _is_lock_current(manifest, lock_path):
+            click.secho("✓ Lock is current, skipping (--frozen)", fg="green")
+            return
+
+        click.echo("Pushing workspace from ontology.yaml …")
+        artifact = _workspace_push(manifest, cwd, registry_url, token)
+        _write_lock(artifact, manifest, lock_path)
+        click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
+
+    m = artifact.get("manifest", {})
+    click.secho(
+        f"✓ Compiled: {m.get('concept_count', '?')} concepts, "
+        f"{m.get('entity_count', '?')} entities, "
+        f"{m.get('property_count', '?')} properties",
+        fg="green",
+    )
+
+    _patch_ontop(artifact, namespace, configmap, no_restart)
