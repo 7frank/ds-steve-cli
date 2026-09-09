@@ -914,7 +914,9 @@ def upgrade():
 
 
 from steve_cli.ontology import ontology
+from steve_cli.vkg import vkg
 main.add_command(ontology)
+main.add_command(vkg)
 
 
 if __name__ == '__main__':

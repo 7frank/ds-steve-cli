@@ -3,7 +3,7 @@
 Commands:
   steve ontology register <file.yaml>               register a concept/binding YAML
   steve ontology compile  --root <uri> --binding <uri>   compile and print artifact info
-  steve ontology push     --root <uri> --binding <uri>   compile + upload to Ontop via sidecar
+  steve ontology push     --root <uri> --binding <uri>   compile + upload to VKG control plane
 """
 from __future__ import annotations
 
@@ -359,7 +359,7 @@ def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
 
 
 def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
-    click.echo("Uploading VKG artifacts to Ontop sidecar — Ontop will restart (~10s) …")
+    click.echo("Uploading VKG artifacts to VKG control plane …")
     r = requests.post(
         f"{sidecar_url}/upload",
         json={
@@ -381,7 +381,7 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
 @click.option("--binding", default=None, help="Binding package URI (overrides manifest)")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-@click.option("--ontop-sidecar-url", envvar="ONTOP_SIDECAR_URL", default="http://localhost:18082", show_default=True)
+@click.option("--vkg-url", envvar="VKG_CONTROL_PLANE_URL", default=None, show_default=True)
 @click.option("--frozen", is_flag=True, default=False, help="Fail if lock file is absent or stale (like npm ci)")
 def push_cmd(
     manifest_file: str | None,
@@ -389,13 +389,16 @@ def push_cmd(
     binding: str | None,
     base_prefix: str | None,
     registry_url: str,
-    ontop_sidecar_url: str,
+    vkg_url: str | None,
     frozen: bool,
 ):
-    """Compile VKG artifacts and push them to Ontop via the sidecar upload API."""
+    """Compile VKG artifacts and push them to the VKG control plane."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+
+    if vkg_url is None:
+        vkg_url = os.getenv("VKG_CONTROL_PLANE_URL", os.getenv("ONTOP_SIDECAR_URL", "http://localhost:18081"))
 
     token = _get_token()
     cwd = Path.cwd()
@@ -441,4 +444,4 @@ def push_cmd(
         fg="green",
     )
 
-    _push_to_ontop_sidecar(artifact, ontop_sidecar_url)
+    _push_to_ontop_sidecar(artifact, vkg_url)
