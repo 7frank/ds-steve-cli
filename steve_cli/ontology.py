@@ -78,6 +78,47 @@ def ontology():
     """Manage VKG ontology packages and compile artifacts."""
 
 
+@ontology.command("ls")
+@click.argument("query", default="", required=False)
+@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--no-bindings", "show_bindings", is_flag=True, default=True, flag_value=False, help="Hide bindings section")
+def ls_cmd(query: str, registry_url: str, show_bindings: bool):
+    """List ontology packages (and bindings) in the registry."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
+
+    r = requests.get(f"{registry_url}/api/v1/search", params={"q": query, "limit": 100}, timeout=15)
+    if r.status_code != 200:
+        click.secho(f"Registry error: {r.status_code} {r.text[:200]}", fg="red", err=True)
+        sys.exit(1)
+
+    results = r.json().get("results", [])
+    packages = [x for x in results if x.get("type") == "product"]
+
+    click.secho(f"Packages ({len(packages)})", bold=True)
+    if packages:
+        width = max(len(p["uri"]) for p in packages)
+        for p in packages:
+            click.echo(f"  {p['uri']:<{width}}  {p.get('version', '')}")
+    else:
+        click.secho("  (none)", dim=True)
+
+    if show_bindings:
+        rb = requests.get(f"{registry_url}/api/v1/bindings", timeout=15)
+        bindings = rb.json() if rb.status_code == 200 else []
+        if query:
+            bindings = [b for b in bindings if query.lower() in b.get("uri", "").lower()]
+        click.echo()
+        click.secho(f"Bindings ({len(bindings)})", bold=True)
+        if bindings:
+            width = max(len(b["uri"]) for b in bindings)
+            for b in bindings:
+                click.echo(f"  {b['uri']:<{width}}  {b.get('version', '')}")
+        else:
+            click.secho("  (none)", dim=True)
+
+
 @ontology.command("register")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
