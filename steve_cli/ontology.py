@@ -119,6 +119,75 @@ def ls_cmd(query: str, registry_url: str, show_bindings: bool):
             click.secho("  (none)", dim=True)
 
 
+@ontology.command("add")
+@click.argument("uri")
+@click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to update")
+def add_cmd(uri: str, manifest_file: str):
+    """Add a remote dependency URI to the manifest (like npm install <pkg>)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
+
+    path = Path(manifest_file)
+    if path.exists():
+        manifest = yaml.safe_load(path.read_text()) or {}
+    else:
+        manifest = {}
+
+    deps = manifest.setdefault("dependencies", [])
+    if uri in deps:
+        click.secho(f"  {uri} already in dependencies", dim=True)
+        return
+    deps.append(uri)
+    path.write_text(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+    click.secho(f"✓ Added dependency: {uri}", fg="green")
+
+
+@ontology.command("build")
+@click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to read")
+@click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
+@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=Path("vkg"), show_default=True, help="Write artifacts to this directory")
+def build_cmd(manifest_file: str, base_prefix: str | None, registry_url: str, output_dir: Path):
+    """Resolve dependencies, compile VKG artifacts, and write them locally (no Ontop push)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
+
+    token = _get_token()
+    cwd = Path.cwd()
+    manifest_path = cwd / manifest_file
+    if not manifest_path.exists():
+        click.secho(f"Manifest not found: {manifest_file}", fg="red", err=True)
+        sys.exit(1)
+
+    manifest = yaml.safe_load(manifest_path.read_text())
+    if base_prefix:
+        manifest.setdefault("compile", {})["base_prefix"] = base_prefix
+
+    click.echo(f"Building from {manifest_file} …")
+    artifact = _workspace_push(manifest, cwd, registry_url, token)
+
+    lock_path = cwd / (Path(manifest_file).stem + ".lock.yaml")
+    _write_lock(artifact, manifest, lock_path)
+    click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "ontology.ttl").write_text(artifact["ontology_ttl"])
+    (output_dir / "mappings.obda").write_text(artifact["mappings_obda"])
+    (output_dir / "prefixes.properties").write_text(artifact["prefixes_properties"])
+    (output_dir / "manifest.json").write_text(json.dumps(artifact["manifest"], indent=2))
+
+    m = artifact.get("manifest", {})
+    click.secho(
+        f"✓ Built: {m.get('concept_count', '?')} concepts, "
+        f"{m.get('entity_count', '?')} entities, "
+        f"{m.get('property_count', '?')} properties",
+        fg="green",
+    )
+    click.secho(f"  Artifacts written to {output_dir}/", fg="cyan")
+
+
 @ontology.command("register")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
@@ -259,13 +328,15 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
 
 
 @ontology.command("push")
-@click.option("--root", default=None, help="Root concept package URI (overrides ontology.yaml)")
-@click.option("--binding", default=None, help="Binding package URI (overrides ontology.yaml)")
+@click.option("-f", "--file", "manifest_file", default=None, help="Manifest file (default: ontology.yaml)")
+@click.option("--root", default=None, help="Root concept package URI (overrides manifest)")
+@click.option("--binding", default=None, help="Binding package URI (overrides manifest)")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
 @click.option("--ontop-sidecar-url", envvar="ONTOP_SIDECAR_URL", default="http://localhost:18082", show_default=True)
-@click.option("--frozen", is_flag=True, default=False, help="Skip if ontology.lock.yaml is current")
+@click.option("--frozen", is_flag=True, default=False, help="Fail if lock file is absent or stale (like npm ci)")
 def push_cmd(
+    manifest_file: str | None,
     root: str | None,
     binding: str | None,
     base_prefix: str | None,
@@ -285,20 +356,27 @@ def push_cmd(
         click.echo(f"Compiling {root} × {binding} …")
         artifact = _compile(root, binding, base_prefix, registry_url, token)
     else:
-        manifest_path = cwd / "ontology.yaml"
+        chosen = manifest_file or "ontology.yaml"
+        manifest_path = cwd / chosen
         if not manifest_path.exists():
-            click.secho("No --root/--binding provided and no ontology.yaml found in current directory.", fg="red", err=True)
+            click.secho(f"Manifest not found: {chosen}", fg="red", err=True)
             sys.exit(1)
         manifest = yaml.safe_load(manifest_path.read_text())
         if base_prefix:
             manifest.setdefault("compile", {})["base_prefix"] = base_prefix
 
-        lock_path = cwd / "ontology.lock.yaml"
-        if frozen and _is_lock_current(manifest, lock_path):
-            click.secho("✓ Lock is current, skipping (--frozen)", fg="green")
+        lock_path = cwd / (Path(chosen).stem + ".lock.yaml")
+        if frozen:
+            if not lock_path.exists():
+                click.secho(f"--frozen requires a lock file ({lock_path.name}) but none exists. Run without --frozen first.", fg="red", err=True)
+                sys.exit(1)
+            if not _is_lock_current(manifest, lock_path):
+                click.secho(f"--frozen: lock file {lock_path.name} is stale. Run without --frozen to update.", fg="red", err=True)
+                sys.exit(1)
+            click.secho("✓ Lock is current (--frozen)", fg="green")
             return
 
-        click.echo("Pushing workspace from ontology.yaml …")
+        click.echo(f"Pushing workspace from {chosen} …")
         artifact = _workspace_push(manifest, cwd, registry_url, token)
         _write_lock(artifact, manifest, lock_path)
         click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
