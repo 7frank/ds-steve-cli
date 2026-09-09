@@ -71,12 +71,21 @@ class TrinoStorage:
                         config=table_response.config,
                     )
 
-            catalog = _PatchedRestCatalog(
-                "lakekeeper",
-                uri=lakekeeper_base,
-                warehouse=self._lakekeeper_warehouse,
-                **s3_overrides,
-            )
+            try:
+                catalog = _PatchedRestCatalog(
+                    "lakekeeper",
+                    uri=lakekeeper_base,
+                    warehouse=self._lakekeeper_warehouse,
+                    **s3_overrides,
+                )
+            except Exception as exc:
+                msg = str(exc)
+                if "NoSuchWarehouseException" in msg or "does not exist" in msg:
+                    raise RuntimeError(
+                        f"Lakekeeper warehouse '{self._lakekeeper_warehouse}' not found at {lakekeeper_base}.\n"
+                        f"The workspace may not have been provisioned yet — ensure the workspace was created in the data mesh before running this job."
+                    ) from None
+                raise
             if self._lakekeeper_endpoint:
                 catalog.uri = lakekeeper_base
             self.__iceberg_catalog = catalog

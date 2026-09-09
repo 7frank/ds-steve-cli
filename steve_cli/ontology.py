@@ -3,15 +3,13 @@
 Commands:
   steve ontology register <file.yaml>               register a concept/binding YAML
   steve ontology compile  --root <uri> --binding <uri>   compile and print artifact info
-  steve ontology push     --root <uri> --binding <uri>   compile + kubectl patch + restart
+  steve ontology push     --root <uri> --binding <uri>   compile + upload to Ontop via sidecar
 """
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 import click
@@ -202,53 +200,21 @@ def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
     )
 
 
-def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: bool) -> None:
-    patch = {
-        "data": {
-            "ontology.ttl": artifact["ontology_ttl"],
-            "mappings.obda": artifact["mappings_obda"],
-            "prefixes.properties": artifact["prefixes_properties"],
-        }
-    }
-    result = subprocess.run(
-        ["kubectl", "patch", "configmap", configmap, "-n", namespace, "--type=merge", "-p", json.dumps(patch)],
-        capture_output=True,
-        text=True,
-        check=False,
+def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
+    click.echo("Uploading VKG artifacts to Ontop sidecar — Ontop will restart (~10s) …")
+    r = requests.post(
+        f"{sidecar_url}/upload",
+        json={
+            "ontology_ttl": artifact["ontology_ttl"],
+            "mappings_obda": artifact["mappings_obda"],
+            "prefixes_properties": artifact["prefixes_properties"],
+        },
+        timeout=180,
     )
-    if result.returncode != 0:
-        click.secho(f"kubectl patch failed: {result.stderr}", fg="red", err=True)
+    if r.status_code != 200:
+        click.secho(f"Sidecar upload failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
         sys.exit(1)
-    click.secho(f"✓ Patched ConfigMap {configmap}", fg="green")
-
-    if no_restart:
-        click.echo("Skipping rollout restart (--no-restart)")
-        return
-
-    result = subprocess.run(
-        ["kubectl", "rollout", "restart", "deployment/ontop", "-n", namespace],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        click.secho(f"kubectl rollout restart failed: {result.stderr}", fg="red", err=True)
-        sys.exit(1)
-
-    click.echo("Waiting for Ontop rollout …")
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        res = subprocess.run(
-            ["kubectl", "rollout", "status", "deployment/ontop", "-n", namespace, "--timeout=10s"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res.returncode == 0:
-            click.secho("✓ Ontop rollout complete", fg="green")
-            return
-        time.sleep(5)
-    click.secho("⚠ Timed out waiting for Ontop rollout", fg="yellow", err=True)
+    click.secho("✓ Ontop is ready with the new VKG artifacts", fg="green")
 
 
 @ontology.command("push")
@@ -256,24 +222,17 @@ def _patch_ontop(artifact: dict, namespace: str, configmap: str, no_restart: boo
 @click.option("--binding", default=None, help="Binding package URI (overrides ontology.yaml)")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-@click.option("--namespace", "-n", envvar="KUBE_NAMESPACE", default="jambit-data-stack-dev", show_default=True)
-@click.option("--configmap", envvar="ONTOP_CONFIGMAP", default="ontop-vkg-artifacts", show_default=True)
-@click.option("--no-restart", is_flag=True, default=False, help="Patch ConfigMap but skip rollout restart")
+@click.option("--ontop-sidecar-url", envvar="ONTOP_SIDECAR_URL", default="http://localhost:18082", show_default=True)
 @click.option("--frozen", is_flag=True, default=False, help="Skip if ontology.lock.yaml is current")
 def push_cmd(
     root: str | None,
     binding: str | None,
     base_prefix: str | None,
     registry_url: str,
-    namespace: str,
-    configmap: str,
-    no_restart: bool,
+    ontop_sidecar_url: str,
     frozen: bool,
 ):
-    """Compile VKG artifacts and push them to the Ontop ConfigMap, then restart Ontop.
-
-    With no arguments, reads ontology.yaml from the current directory.
-    """
+    """Compile VKG artifacts and push them to Ontop via the sidecar upload API."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
@@ -311,4 +270,4 @@ def push_cmd(
         fg="green",
     )
 
-    _patch_ontop(artifact, namespace, configmap, no_restart)
+    _push_to_ontop_sidecar(artifact, ontop_sidecar_url)
