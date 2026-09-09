@@ -358,19 +358,29 @@ def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
     )
 
 
-def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
-    click.echo("Uploading VKG artifacts to VKG control plane …")
-    r = requests.post(
-        f"{sidecar_url}/upload",
-        json={
-            "ontology_ttl": artifact["ontology_ttl"],
-            "mappings_obda": artifact["mappings_obda"],
-            "prefixes_properties": artifact["prefixes_properties"],
-        },
-        timeout=180,
-    )
+def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default") -> None:
+    click.echo(f"Uploading VKG artifacts to VKG control plane (slot: {name}) …")
+    payload = {
+        "ontology_ttl": artifact["ontology_ttl"],
+        "mappings_obda": artifact["mappings_obda"],
+        "prefixes_properties": artifact["prefixes_properties"],
+        "manifest": artifact.get("manifest", {}),
+    }
+    if name == "default":
+        r = requests.post(f"{sidecar_url}/upload", json=payload, timeout=180)
+    else:
+        r = requests.post(f"{sidecar_url}/vkg/{name}/upload", json=payload, timeout=30)
+        if r.status_code not in (200, 201):
+            click.secho(f"Upload failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
+            sys.exit(1)
+        r2 = requests.post(f"{sidecar_url}/vkg/{name}/start", timeout=180)
+        if r2.status_code not in (200, 201):
+            click.secho(f"Start failed: {r2.status_code} {r2.text[:400]}", fg="red", err=True)
+            sys.exit(1)
+        click.secho(f"✓ VKG slot '{name}' is ready", fg="green")
+        return
     if r.status_code != 200:
-        click.secho(f"Sidecar upload failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
+        click.secho(f"Upload failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
         sys.exit(1)
     click.secho("✓ Ontop is ready with the new VKG artifacts", fg="green")
 
@@ -382,6 +392,7 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str) -> None:
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
 @click.option("--vkg-url", envvar="VKG_CONTROL_PLANE_URL", default=None, show_default=True)
+@click.option("--name", "vkg_name", default="default", show_default=True, help="Named VKG slot on the control plane")
 @click.option("--frozen", is_flag=True, default=False, help="Fail if lock file is absent or stale (like npm ci)")
 def push_cmd(
     manifest_file: str | None,
@@ -390,6 +401,7 @@ def push_cmd(
     base_prefix: str | None,
     registry_url: str,
     vkg_url: str | None,
+    vkg_name: str,
     frozen: bool,
 ):
     """Compile VKG artifacts and push them to the VKG control plane."""
@@ -444,4 +456,4 @@ def push_cmd(
         fg="green",
     )
 
-    _push_to_ontop_sidecar(artifact, vkg_url)
+    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name)
