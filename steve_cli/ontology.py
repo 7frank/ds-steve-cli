@@ -165,11 +165,17 @@ def build_cmd(manifest_file: str, base_prefix: str | None, registry_url: str, ou
     if base_prefix:
         manifest.setdefault("compile", {})["base_prefix"] = base_prefix
 
+    trino_endpoint = os.getenv("TRINO_ENDPOINT")
+
     click.echo(f"Building from {manifest_file} …")
-    artifact = _workspace_push(manifest, cwd, registry_url, token)
+    artifact, tables = _workspace_push(manifest, cwd, registry_url, token)
+
+    snapshots = _capture_snapshots(tables, trino_endpoint) if trino_endpoint and tables else {}
+    if snapshots:
+        click.secho(f"  Captured {len(snapshots)} Iceberg snapshot(s)", dim=True)
 
     lock_path = cwd / (Path(manifest_file).stem + ".lock.yaml")
-    _write_lock(artifact, manifest, lock_path)
+    _write_lock(artifact, manifest, lock_path, snapshots or None)
     click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -255,15 +261,21 @@ def _workspace_push(
     cwd: Path,
     registry_url: str,
     token: str,
-) -> dict:
+) -> tuple[dict, list[str]]:
     all_paths = manifest.get("packages", []) + manifest.get("bindings", [])
     package_files = []
+    tables: list[str] = []
     for path in all_paths:
         full = cwd / path
         if not full.exists():
             click.secho(f"File not found: {full}", fg="red", err=True)
             sys.exit(1)
-        package_files.append({"path": path, "content": full.read_text()})
+        content = full.read_text()
+        package_files.append({"path": path, "content": content})
+        data = yaml.safe_load(content)
+        for entity in data.get("entities", []):
+            if "table" in entity:
+                tables.append(entity["table"])
 
     payload = {
         "manifest": manifest,
@@ -278,10 +290,44 @@ def _workspace_push(
     if r.status_code != 200:
         click.secho(f"Workspace push failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
         sys.exit(1)
-    return r.json()
+    return r.json(), tables
 
 
-def _write_lock(artifact: dict, manifest: dict, lock_path: Path) -> None:
+def _capture_snapshots(tables: list[str], trino_endpoint: str) -> dict:
+    import time
+    snapshots: dict[str, int] = {}
+    for fqt in tables:
+        parts = fqt.split(".")
+        if len(parts) != 3:
+            continue
+        catalog, schema, table = parts
+        query = f'SELECT snapshot_id FROM {catalog}.{schema}."{table}$snapshots" ORDER BY committed_at DESC LIMIT 1'
+        try:
+            r = requests.post(
+                f"{trino_endpoint}/v1/statement",
+                data=query,
+                headers={"X-Trino-User": "steve-cli"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            body = r.json()
+            rows: list = []
+            for _ in range(30):
+                rows.extend(body.get("data") or [])
+                next_uri = body.get("nextUri")
+                if not next_uri:
+                    break
+                time.sleep(0.2)
+                body = requests.get(next_uri, timeout=15).json()
+            rows.extend(body.get("data") or [])
+            if rows:
+                snapshots[fqt] = rows[0][0]
+        except Exception:
+            pass
+    return snapshots
+
+
+def _write_lock(artifact: dict, manifest: dict, lock_path: Path, snapshots: dict | None = None) -> None:
     import hashlib
     from datetime import datetime, timezone
 
@@ -296,6 +342,8 @@ def _write_lock(artifact: dict, manifest: dict, lock_path: Path) -> None:
             "mappings_obda_hash": "sha256:" + hashlib.sha256(artifact["mappings_obda"].encode()).hexdigest(),
         },
     }
+    if snapshots:
+        lock["snapshots"] = snapshots
     lock_path.write_text(yaml.dump(lock, default_flow_style=False))
 
 
@@ -376,9 +424,13 @@ def push_cmd(
             click.secho("✓ Lock is current (--frozen)", fg="green")
             return
 
+        trino_endpoint = os.getenv("TRINO_ENDPOINT")
         click.echo(f"Pushing workspace from {chosen} …")
-        artifact = _workspace_push(manifest, cwd, registry_url, token)
-        _write_lock(artifact, manifest, lock_path)
+        artifact, tables = _workspace_push(manifest, cwd, registry_url, token)
+        snapshots = _capture_snapshots(tables, trino_endpoint) if trino_endpoint and tables else {}
+        if snapshots:
+            click.secho(f"  Captured {len(snapshots)} Iceberg snapshot(s)", dim=True)
+        _write_lock(artifact, manifest, lock_path, snapshots or None)
         click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
 
     m = artifact.get("manifest", {})
