@@ -184,6 +184,15 @@ def build_cmd(manifest_file: str, base_prefix: str | None, registry_url: str, ou
     (output_dir / "prefixes.properties").write_text(artifact["prefixes_properties"])
     (output_dir / "manifest.json").write_text(json.dumps(artifact["manifest"], indent=2))
 
+    void_endpoint = os.getenv("VKG_CONTROL_PLANE_URL", os.getenv("ONTOP_SIDECAR_URL", "http://localhost:18081"))
+    void_endpoint = void_endpoint.rstrip("/") + "/vkg/default/sparql"
+    try:
+        void_ttl = _generate_void_ttl(artifact["ontology_ttl"], void_endpoint)
+        (output_dir / "void.ttl").write_text(void_ttl)
+        click.secho(f"  VoID schema written to {output_dir}/void.ttl", fg="cyan")
+    except Exception as e:
+        click.secho(f"  Warning: VoID generation failed: {e}", fg="yellow")
+
     m = artifact.get("manifest", {})
     click.secho(
         f"✓ Built: {m.get('concept_count', '?')} concepts, "
@@ -347,6 +356,78 @@ def _write_lock(artifact: dict, manifest: dict, lock_path: Path, snapshots: dict
     lock_path.write_text(yaml.dump(lock, default_flow_style=False))
 
 
+def _generate_void_ttl(ontology_ttl: str, endpoint_url: str) -> str:
+    """Generate a VoID TTL string from a compiled OWL ontology TTL string.
+
+    Reads OWL class/property declarations (owl:Class, rdfs:domain, rdfs:range,
+    rdfs:subClassOf) and produces void:classPartition / void:propertyPartition
+    triples that sparql-llm can use to understand the VKG schema.
+
+    This approach is used instead of the sib-swiss void-generator Java CLI because
+    Ontop is a Virtual Knowledge Graph: it only answers SPARQL patterns covered by
+    its OBDA mappings. VoID metadata predicates (void:classPartition etc.) are not
+    mapped to any SQL table, so void-generator discovery queries return 0 results.
+    """
+    import io
+    import rdflib
+    from rdflib.namespace import OWL, RDF, RDFS, XSD
+
+    VOID = rdflib.Namespace("http://rdfs.org/ns/void#")
+    VOID_EXT = rdflib.Namespace("http://ldf.fi/void-ext#")
+
+    src = rdflib.Graph()
+    src.parse(data=ontology_ttl, format="turtle")
+
+    classes = {c for c in src.subjects(RDF.type, OWL.Class) if isinstance(c, rdflib.term.URIRef)}
+
+    def _ancestors(cls: rdflib.term.URIRef) -> set:
+        result: set = set()
+        queue = list(src.objects(cls, RDFS.subClassOf))
+        while queue:
+            parent = queue.pop()
+            if isinstance(parent, rdflib.term.URIRef) and parent not in result:
+                result.add(parent)
+                queue.extend(src.objects(parent, RDFS.subClassOf))
+        return result
+
+    out = rdflib.Graph()
+    out.bind("void", VOID)
+    out.bind("void-ext", VOID_EXT)
+    out.bind("xsd", XSD)
+
+    dataset = rdflib.URIRef(endpoint_url)
+    out.add((dataset, RDF.type, VOID.Dataset))
+
+    for cls in classes:
+        cp = rdflib.BNode()
+        out.add((dataset, VOID.classPartition, cp))
+        out.add((cp, VOID["class"], cls))
+        props: dict = {}
+        for ancestor in ({cls} | _ancestors(cls)):
+            for prop in src.subjects(RDFS.domain, ancestor):
+                if isinstance(prop, rdflib.term.URIRef):
+                    props[prop] = list(src.objects(prop, RDFS.range))
+        for prop, ranges in props.items():
+            pp = rdflib.BNode()
+            out.add((cp, VOID.propertyPartition, pp))
+            out.add((pp, VOID.property, prop))
+            for rng in ranges:
+                if not isinstance(rng, rdflib.term.URIRef):
+                    continue
+                if str(rng).startswith(str(XSD)):
+                    dn = rdflib.BNode()
+                    out.add((pp, VOID_EXT.datatypePartition, dn))
+                    out.add((dn, VOID_EXT.datatype, rng))
+                else:
+                    cn = rdflib.BNode()
+                    out.add((pp, VOID.classPartition, cn))
+                    out.add((cn, VOID["class"], rng))
+
+    buf = io.BytesIO()
+    out.serialize(destination=buf, format="turtle")
+    return buf.getvalue().decode()
+
+
 def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
     if not lock_path.exists():
         return False
@@ -360,11 +441,18 @@ def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
 
 def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default") -> None:
     click.echo(f"Uploading VKG artifacts to VKG control plane (slot: {name}) …")
+    sparql_url = sidecar_url.rstrip("/") + f"/vkg/{name}/sparql"
+    void_ttl: str | None = None
+    try:
+        void_ttl = _generate_void_ttl(artifact["ontology_ttl"], sparql_url)
+    except Exception as e:
+        click.secho(f"  Warning: VoID generation failed: {e}", fg="yellow")
     payload = {
         "ontology_ttl": artifact["ontology_ttl"],
         "mappings_obda": artifact["mappings_obda"],
         "prefixes_properties": artifact["prefixes_properties"],
         "manifest": artifact.get("manifest", {}),
+        "void_ttl": void_ttl,
     }
     if name == "default":
         r = requests.post(f"{sidecar_url}/upload", json=payload, timeout=180)
