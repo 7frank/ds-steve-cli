@@ -108,6 +108,7 @@ def init_cmd(manifest_file: str, org: str, name: str, force: bool):
         sys.exit(1)
 
     stub = f"""\
+# yaml-language-server: $schema=./vkg_modules/.schemas/manifest.schema.json
 # Ontology manifest — edit to match your domain
 packages: []
 #  - ontologies/{name.replace('-', '_')}_core.yaml
@@ -207,10 +208,13 @@ def schema_cmd(output_dir: Path | None):
             dst = output_dir / src.name
             _shutil.copy2(src, dst)
             paths[key] = dst
-    click.secho(f"✓ package schema → {paths['package']}", fg="green")
+    click.secho(f"✓ manifest schema → {paths['manifest']}", fg="green")
+    click.secho(f"✓ concept schema  → {paths['concept']}", fg="green")
     click.secho(f"✓ binding schema  → {paths['binding']}", fg="green")
-    click.secho("Add this comment to your package YAML files:", dim=True)
-    click.echo("  # yaml-language-server: $schema=../vkg_modules/.schemas/package.schema.json")
+    click.secho("Add this comment to your ontology.yaml:", dim=True)
+    click.echo("  # yaml-language-server: $schema=./vkg_modules/.schemas/manifest.schema.json")
+    click.secho("Add this comment to your concept YAML files:", dim=True)
+    click.echo("  # yaml-language-server: $schema=../vkg_modules/.schemas/concept.schema.json")
     click.secho("Add this comment to your binding YAML files:", dim=True)
     click.echo("  # yaml-language-server: $schema=../vkg_modules/.schemas/binding.schema.json")
 
@@ -266,6 +270,33 @@ def add_cmd(uri: str, manifest_file: str, registry_url: str):
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
 
+    if "@" in uri.replace("dp://", "", 1):
+        at_idx = uri.index("@", uri.index("://") + 3)
+        base_uri = uri[:at_idx]
+        pinned_version = uri[at_idx + 1:]
+    else:
+        base_uri = uri
+        pinned_version = None
+
+    token = _get_token()
+
+    if pinned_version is None:
+        path_part = base_uri.replace("dp://", "")
+        try:
+            r = requests.get(f"{registry_url}/api/v1/product/{path_part}", headers=_headers(token), timeout=15)
+        except requests.exceptions.ConnectionError:
+            click.secho(f"✗ Cannot connect to registry at {registry_url}", fg="red", err=True)
+            sys.exit(1)
+        if r.status_code != 200:
+            click.secho(f"✗ Failed to fetch {base_uri}: {r.status_code} {r.text[:200]}", fg="red", err=True)
+            sys.exit(1)
+        pinned_version = r.json().get("version", "")
+        if not pinned_version:
+            click.secho(f"✗ Registry returned no version for {base_uri}", fg="red", err=True)
+            sys.exit(1)
+
+    pinned_uri = f"{base_uri}@{pinned_version}"
+
     cwd = Path.cwd()
     path = cwd / manifest_file
     if path.exists():
@@ -274,15 +305,22 @@ def add_cmd(uri: str, manifest_file: str, registry_url: str):
         manifest = {}
 
     deps = manifest.setdefault("dependencies", [])
-    if uri not in deps:
-        deps.append(uri)
-        path.write_text(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
-        click.secho(f"✓ Added {uri} to {manifest_file}", fg="green")
+    existing_bases = [d.split("@")[0] if "@" in d.replace("dp://", "", 1) else d for d in deps]
+    if base_uri in existing_bases:
+        idx = existing_bases.index(base_uri)
+        if deps[idx] == pinned_uri:
+            click.secho(f"  {pinned_uri} already in dependencies", dim=True)
+        else:
+            old = deps[idx]
+            deps[idx] = pinned_uri
+            path.write_text(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+            click.secho(f"✓ Updated {old} → {pinned_uri} in {manifest_file}", fg="green")
     else:
-        click.secho(f"  {uri} already in dependencies", dim=True)
+        deps.append(pinned_uri)
+        path.write_text(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+        click.secho(f"✓ Added {pinned_uri} to {manifest_file}", fg="green")
 
-    token = _get_token()
-    written = _install_deps({"dependencies": [uri]}, cwd, registry_url, token)
+    written = _install_deps({"dependencies": [pinned_uri]}, cwd, registry_url, token)
     if written:
         click.secho(f"✓ Downloaded {written} package(s) into vkg_modules/", fg="green")
     else:
@@ -312,21 +350,23 @@ def _install_deps(manifest: dict, cwd: Path, registry_url: str, token: str, forc
         if uri in visited:
             continue
         visited.add(uri)
-        dest_dir = cwd / "vkg_modules" / _uri_to_path(uri)
-        slug = uri.rstrip("/").split("/")[-1]
+        base_uri_for_path = uri.split("@")[0] if "@" in uri.replace("dp://", "", 1) else uri
+        dest_dir = cwd / "vkg_modules" / _uri_to_path(base_uri_for_path)
+        slug = base_uri_for_path.rstrip("/").split("/")[-1]
         dest_file = dest_dir / f"{slug}.yaml"
         if dest_file.exists() and not force:
             data = yaml.safe_load(dest_file.read_text()) or {}
             queue.extend(_collect_import_uris(data))
             continue
-        path_part = uri.replace("dp://", "")
-        r = requests.get(f"{registry_url}/api/v1/product/{path_part}", headers=_headers(token), timeout=15)
-        if r.status_code == 404:
-            click.secho(f"  Warning: {uri} not found in registry", fg="yellow")
-            continue
+        path_part = base_uri_for_path.replace("dp://", "")
+        try:
+            r = requests.get(f"{registry_url}/api/v1/product/{path_part}", headers=_headers(token), timeout=15)
+        except requests.exceptions.ConnectionError:
+            click.secho(f"✗ Cannot connect to registry at {registry_url}", fg="red", err=True)
+            sys.exit(1)
         if r.status_code != 200:
-            click.secho(f"  Warning: failed to fetch {uri}: {r.status_code}", fg="yellow")
-            continue
+            click.secho(f"✗ Failed to fetch {uri}: {r.status_code} {r.text[:200]}", fg="red", err=True)
+            sys.exit(1)
         data = r.json()
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True))
@@ -361,8 +401,8 @@ def install_cmd(manifest_file: str, registry_url: str, force: bool):
 @ontology.command("build")
 @click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to read")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
-@click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=Path("vkg_modules/.self"), show_default=True, help="Write compiled artifacts to this directory")
-def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path):
+@click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Write compiled artifacts to this directory (default: vkg_modules/.build/<manifest-stem>)")
+def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path | None):
     """Resolve dependencies, compile VKG artifacts, and write them locally (no Ontop push)."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
@@ -377,6 +417,9 @@ def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path):
     manifest = yaml.safe_load(manifest_path.read_text())
     if base_prefix:
         manifest.setdefault("compile", {})["base_prefix"] = base_prefix
+
+    if output_dir is None:
+        output_dir = Path("vkg_modules") / ".build" / Path(manifest_file).stem
 
     trino_endpoint = os.getenv("TRINO_ENDPOINT")
 
@@ -1334,12 +1377,59 @@ def _generate_schemas(cwd: Path) -> dict:
         }
     }
 
+    manifest_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "VKG Ontology Manifest",
+        "description": "Top-level manifest for a VKG workspace. Lists local concept packages and bindings, declares the compile entry point, and references remote dependencies.",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "packages": {
+                "type": "array",
+                "description": "Relative paths to local concept package YAML files in this workspace.",
+                "markdownDescription": "Relative paths to local concept package YAML files in this workspace.\n\nExample:\n```yaml\npackages:\n  - ontologies/order_core.yaml\n```",
+                "items": {"type": "string"},
+            },
+            "bindings": {
+                "type": "array",
+                "description": "Relative paths to local physical binding YAML files in this workspace.",
+                "markdownDescription": "Relative paths to local physical binding YAML files in this workspace.\n\nExample:\n```yaml\nbindings:\n  - ontologies/binding_order_iceberg.yaml\n```",
+                "items": {"type": "string"},
+            },
+            "compile": {
+                "type": "object",
+                "description": "Entry point for compilation — which concept package and binding to compile together.",
+                "additionalProperties": False,
+                "properties": {
+                    "root": {
+                        "type": "string",
+                        "description": "URI of the root concept package to compile, e.g. dp://o/acme/concepts/order/core.",
+                        "markdownDescription": "URI of the root concept package to compile.\n\nMust match the `uri` field in one of the `packages` files.\n\nExample: `dp://o/acme/concepts/order/core`",
+                    },
+                    "binding": {
+                        "type": "string",
+                        "description": "URI of the binding to compile against, e.g. dp://o/acme/bindings/order/iceberg.",
+                        "markdownDescription": "URI of the binding to compile against.\n\nMust match the `uri` field in one of the `bindings` files.\n\nExample: `dp://o/acme/bindings/order/iceberg`",
+                    },
+                },
+            },
+            "dependencies": {
+                "type": "array",
+                "description": "Remote ontology package URIs to fetch from the registry into vkg_modules/.",
+                "markdownDescription": "Remote ontology package URIs to fetch from the registry into `vkg_modules/`.\n\nRun `steve ontology install` or `steve ontology add <uri>` to download them.\n\nExample:\n```yaml\ndependencies:\n  - dp://o/acme/concepts/party/core\n```",
+                "items": {"type": "string", "pattern": "^dp://"},
+            },
+        },
+    }
+
     import json as _json
-    pkg_path = schemas_dir / "package.schema.json"
+    concept_path = schemas_dir / "concept.schema.json"
     binding_path = schemas_dir / "binding.schema.json"
-    pkg_path.write_text(_json.dumps(package_schema, indent=2))
+    manifest_path = schemas_dir / "manifest.schema.json"
+    concept_path.write_text(_json.dumps(package_schema, indent=2))
     binding_path.write_text(_json.dumps(binding_schema, indent=2))
-    return {"package": pkg_path, "binding": binding_path}
+    manifest_path.write_text(_json.dumps(manifest_schema, indent=2))
+    return {"concept": concept_path, "binding": binding_path, "manifest": manifest_path}
 
 
 def _write_local_packages(manifest: dict, cwd: Path) -> None:
@@ -1359,12 +1449,12 @@ def _write_local_packages(manifest: dict, cwd: Path) -> None:
         shutil.copy2(full, dest / full.name)
 
 
-def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default", cwd: Path | None = None) -> None:
+def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default", output_dir: Path | None = None) -> None:
     click.echo(f"Uploading VKG artifacts to VKG control plane (slot: {name}) …")
     sparql_url = sidecar_url.rstrip("/") + f"/vkg/{name}/sparql"
     void_ttl: str | None = None
-    if cwd is not None:
-        void_file = cwd / "vkg_modules" / ".self" / "void.ttl"
+    if output_dir is not None:
+        void_file = output_dir / "void.ttl"
         if void_file.exists():
             void_ttl = void_file.read_text()
     if void_ttl is None:
@@ -1373,8 +1463,8 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
         except Exception as e:
             click.secho(f"  Warning: VoID generation failed: {e}", fg="yellow")
     examples_ttl: str | None = None
-    if cwd is not None:
-        examples_file = cwd / "vkg_modules" / ".self" / "examples.ttl"
+    if output_dir is not None:
+        examples_file = output_dir / "examples.ttl"
         if examples_file.exists():
             examples_ttl = examples_file.read_text()
     payload = {
@@ -1476,7 +1566,9 @@ def push_cmd(
         fg="green",
     )
 
-    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name, cwd=cwd)
+    chosen_stem = Path(manifest_file or "ontology").stem
+    output_dir = cwd / "vkg_modules" / ".build" / chosen_stem
+    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name, output_dir=output_dir)
 
 
 # ---------------------------------------------------------------------------
