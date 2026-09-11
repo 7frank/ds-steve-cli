@@ -143,11 +143,80 @@ def add_cmd(uri: str, manifest_file: str):
     click.secho(f"✓ Added dependency: {uri}", fg="green")
 
 
+def _collect_import_uris(data: dict) -> list[str]:
+    """Extract all concept_imports URIs from a parsed package YAML dict."""
+    return data.get("semantics", {}).get("concept_imports", [])
+
+
+def _install_deps(manifest: dict, cwd: Path, registry_url: str, token: str, force: bool = False) -> int:
+    """Recursively fetch all transitive imports into vkg_modules/<uri-path>/."""
+    all_local_paths = manifest.get("packages", []) + manifest.get("bindings", [])
+    queue: list[str] = []
+    for path in all_local_paths:
+        full = cwd / path
+        if not full.exists():
+            continue
+        data = yaml.safe_load(full.read_text()) or {}
+        queue.extend(_collect_import_uris(data))
+
+    visited: set[str] = set()
+    written = 0
+    while queue:
+        uri = queue.pop(0)
+        if uri in visited:
+            continue
+        visited.add(uri)
+        dest_dir = cwd / "vkg_modules" / _uri_to_path(uri)
+        slug = uri.rstrip("/").split("/")[-1]
+        dest_file = dest_dir / f"{slug}.yaml"
+        if dest_file.exists() and not force:
+            data = yaml.safe_load(dest_file.read_text()) or {}
+            queue.extend(_collect_import_uris(data))
+            continue
+        path_part = uri.replace("dp://", "")
+        r = requests.get(f"{registry_url}/api/v1/product/{path_part}", headers=_headers(token), timeout=15)
+        if r.status_code == 404:
+            click.secho(f"  Warning: {uri} not found in registry", fg="yellow")
+            continue
+        if r.status_code != 200:
+            click.secho(f"  Warning: failed to fetch {uri}: {r.status_code}", fg="yellow")
+            continue
+        data = r.json()
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_file.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True))
+        click.secho(f"  ↓ {uri}", dim=True)
+        written += 1
+        queue.extend(_collect_import_uris(data))
+    return written
+
+
+@ontology.command("install")
+@click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to read")
+@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--force", is_flag=True, default=False, help="Re-download even if already present")
+def install_cmd(manifest_file: str, registry_url: str, force: bool):
+    """Download all transitive import dependencies into vkg_modules/ (like npm install)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
+
+    cwd = Path.cwd()
+    manifest_path = cwd / manifest_file
+    if not manifest_path.exists():
+        click.secho(f"Manifest not found: {manifest_file}", fg="red", err=True)
+        sys.exit(1)
+    manifest = yaml.safe_load(manifest_path.read_text()) or {}
+    token = _get_token()
+    click.echo(f"Installing dependencies from {manifest_file} …")
+    written = _install_deps(manifest, cwd, registry_url, token, force=force)
+    click.secho(f"✓ {written} package(s) installed into vkg_modules/", fg="green")
+
+
 @ontology.command("build")
 @click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to read")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-@click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=Path("vkg"), show_default=True, help="Write artifacts to this directory")
+@click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=Path("vkg_modules/.self"), show_default=True, help="Write compiled artifacts to this directory")
 def build_cmd(manifest_file: str, base_prefix: str | None, registry_url: str, output_dir: Path):
     """Resolve dependencies, compile VKG artifacts, and write them locally (no Ontop push)."""
     from dotenv import load_dotenv
@@ -183,6 +252,8 @@ def build_cmd(manifest_file: str, base_prefix: str | None, registry_url: str, ou
     (output_dir / "mappings.obda").write_text(artifact["mappings_obda"])
     (output_dir / "prefixes.properties").write_text(artifact["prefixes_properties"])
     (output_dir / "manifest.json").write_text(json.dumps(artifact["manifest"], indent=2))
+
+    _write_local_packages(manifest, cwd)
 
     void_endpoint = os.getenv("VKG_CONTROL_PLANE_URL", os.getenv("ONTOP_SIDECAR_URL", "http://localhost:18081"))
     void_endpoint = void_endpoint.rstrip("/") + "/vkg/default/sparql"
@@ -439,7 +510,29 @@ def _is_lock_current(manifest: dict, lock_path: Path) -> bool:
     )
 
 
-def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default") -> None:
+def _uri_to_path(uri: str) -> str:
+    """Convert dp://o/acme/concepts/party/core → dp/o/acme/concepts/party/core."""
+    return uri.replace("://", "/").replace("//", "/").rstrip("/")
+
+
+def _write_local_packages(manifest: dict, cwd: Path) -> None:
+    """Write local workspace package files into vkg_modules/<uri-path>/."""
+    all_paths = manifest.get("packages", []) + manifest.get("bindings", [])
+    for path in all_paths:
+        full = cwd / path
+        if not full.exists():
+            continue
+        data = yaml.safe_load(full.read_text()) or {}
+        uri = data.get("uri") or data.get("id")
+        if not uri:
+            continue
+        dest = cwd / "vkg_modules" / _uri_to_path(uri)
+        dest.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy2(full, dest / full.name)
+
+
+def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default", cwd: Path | None = None) -> None:
     click.echo(f"Uploading VKG artifacts to VKG control plane (slot: {name}) …")
     sparql_url = sidecar_url.rstrip("/") + f"/vkg/{name}/sparql"
     void_ttl: str | None = None
@@ -447,12 +540,18 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
         void_ttl = _generate_void_ttl(artifact["ontology_ttl"], sparql_url)
     except Exception as e:
         click.secho(f"  Warning: VoID generation failed: {e}", fg="yellow")
+    examples_ttl: str | None = None
+    if cwd is not None:
+        examples_file = cwd / "vkg_modules" / ".self" / "examples.ttl"
+        if examples_file.exists():
+            examples_ttl = examples_file.read_text()
     payload = {
         "ontology_ttl": artifact["ontology_ttl"],
         "mappings_obda": artifact["mappings_obda"],
         "prefixes_properties": artifact["prefixes_properties"],
         "manifest": artifact.get("manifest", {}),
         "void_ttl": void_ttl,
+        "examples_ttl": examples_ttl,
     }
     if name == "default":
         r = requests.post(f"{sidecar_url}/upload", json=payload, timeout=180)
@@ -535,6 +634,7 @@ def push_cmd(
             click.secho(f"  Captured {len(snapshots)} Iceberg snapshot(s)", dim=True)
         _write_lock(artifact, manifest, lock_path, snapshots or None)
         click.secho(f"✓ Lock written to {lock_path.name}", fg="cyan")
+        _write_local_packages(manifest, cwd)
 
     m = artifact.get("manifest", {})
     click.secho(
@@ -544,4 +644,4 @@ def push_cmd(
         fg="green",
     )
 
-    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name)
+    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name, cwd=cwd)
