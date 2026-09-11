@@ -1067,65 +1067,105 @@ def _generate_schemas(cwd: Path) -> dict:
     package_schema = {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "VKG Ontology Package",
-        "description": "Concept package definition for the VKG (Virtual Knowledge Graph) pipeline",
+        "description": "Defines the business concepts (classes and their properties) for the Virtual Knowledge Graph. Think of this as your domain model — it describes what things exist and how they relate, independent of any physical database.",
         "type": "object",
         "required": ["uri", "version"],
         "additionalProperties": False,
         "properties": {
-            "uri": {"type": "string", "description": "Unique package identifier, e.g. dp://o/acme/concepts/order/core", "pattern": "^dp://"},
-            "version": {"type": "string", "description": "SemVer version string", "pattern": "^\\d+\\.\\d+\\.\\d+"},
-            "description": {"type": "string", "description": "Human-readable description of this package"},
+            "uri": {
+                "type": "string",
+                "pattern": "^dp://",
+                "description": "Stable, globally unique identifier for this package.",
+                "markdownDescription": "Stable, globally unique identifier for this package.\n\nConvention: `dp://o/<org>/concepts/<domain>/core`\n\nExample: `dp://o/acme/concepts/order/core`\n\nThis URI is used by other packages to import your concepts and by bindings to reference which ontology they implement. **Never change it after publishing** — it's like a package name on npm.",
+            },
+            "version": {
+                "type": "string",
+                "pattern": "^\\d+\\.\\d+\\.\\d+",
+                "description": "SemVer version of this package, e.g. 1.0.0.",
+                "markdownDescription": "SemVer version of this package, e.g. `1.0.0`.\n\nBump **patch** for fixes, **minor** for new optional properties, **major** for breaking changes (renamed concepts, removed properties). Bindings reference a version constraint like `^1.0.0` to declare compatibility.",
+            },
+            "description": {"type": "string", "description": "Short human-readable summary of what domain this package models."},
             "semantics": {
                 "type": "object",
-                "description": "Ontology definitions",
+                "description": "The actual ontology content: which concepts exist and how they relate.",
                 "additionalProperties": False,
                 "properties": {
                     "concept_imports": {
                         "type": "array",
-                        "description": "URIs of packages whose concepts this package depends on",
+                        "description": "Other ontology packages whose concepts you want to reuse or extend here.",
+                        "markdownDescription": "Other ontology packages whose concepts you want to reuse or extend here.\n\nImported concepts can be referenced in `extends` (inheritance) and `object_property` (relations). Imports are resolved transitively at compile time — you don't need to re-import transitive dependencies.\n\nExample:\n```yaml\nconcept_imports:\n  - dp://o/acme/concepts/party/core\n```\nThis lets you write `extends: Person` where `Person` lives in the party package.",
                         "items": {"type": "string", "pattern": "^dp://"}
                     },
                     "concepts": {
                         "type": "array",
-                        "description": "List of OWL class definitions",
+                        "description": "The business entities (OWL classes) in this domain, e.g. Customer, Order, Product.",
+                        "markdownDescription": "The business entities (OWL classes) in this domain, e.g. `Customer`, `Order`, `Product`.\n\nEach concept becomes an RDF class. Instances (rows from physical tables) are identified by the `subject_template` defined in the binding.",
                         "items": {
                             "type": "object",
                             "required": ["name"],
                             "additionalProperties": False,
                             "properties": {
-                                "name": {"type": "string", "description": "Class name, e.g. Customer"},
-                                "iri": {"type": "string", "description": "Full IRI for this class, e.g. https://acme.com/ont/order#Customer"},
-                                "description": {"type": "string"},
-                                "extends": {"type": "string", "description": "Name of parent concept (rdfs:subClassOf)"},
+                                "name": {
+                                    "type": "string",
+                                    "description": "PascalCase name for this concept, e.g. Customer. Used as the class name in OWL and referenced by bindings.",
+                                },
+                                "iri": {
+                                    "type": "string",
+                                    "description": "Full IRI for this class. Auto-generated from the package URI if omitted.",
+                                    "markdownDescription": "Full IRI for this OWL class. **Usually omitted** — the compiler generates it from the package URI and concept name.\n\nOnly set this if you need to match an existing external ontology IRI.\n\nExample: `https://acme.com/ont/order#Customer`",
+                                },
+                                "description": {"type": "string", "description": "What this concept represents in the business domain."},
+                                "extends": {
+                                    "type": "string",
+                                    "description": "Inherit all properties from a parent concept (rdfs:subClassOf).",
+                                    "markdownDescription": "Inherit all properties from a parent concept (`rdfs:subClassOf` in OWL).\n\nThe parent must be defined in this package or in one of the `concept_imports`. The subclass inherits all `typed_properties` from its parent.\n\nExample: `extends: Person` makes `Customer` a specialisation of `Person`, inheriting `name`, `email`, etc.",
+                                },
                                 "typed_properties": {
                                     "type": "array",
+                                    "description": "The attributes and relationships of this concept.",
+                                    "markdownDescription": "The attributes and relationships of this concept.\n\n- **Data attributes** (set `datatype`): map to a single column in the physical table, e.g. `customerName → xsd:string`.\n- **Object properties / relations** (set `object_property`): represent a link to another concept, backed by a FK join in the binding.",
                                     "items": {
                                         "type": "object",
                                         "required": ["name"],
                                         "additionalProperties": False,
                                         "properties": {
-                                            "name": {"type": "string"},
-                                            "datatype": {"type": "string", "description": "XSD datatype, e.g. xsd:string, xsd:integer, xsd:decimal"},
-                                            "object_property": {"type": "string", "description": "Target class IRI if this is an object property (relation)"},
-                                            "required": {"type": "boolean"},
-                                            "description": {"type": "string"},
+                                            "name": {
+                                                "type": "string",
+                                                "description": "camelCase property name, e.g. customerName, totalAmount, placedBy.",
+                                            },
+                                            "datatype": {
+                                                "type": "string",
+                                                "description": "XSD type for a data attribute. Common values: xsd:string, xsd:integer, xsd:decimal, xsd:boolean, xsd:date, xsd:dateTime.",
+                                                "markdownDescription": "XSD type for a data attribute. Mutually exclusive with `object_property`.\n\n| Value | Use for |\n|---|---|\n| `xsd:string` | text, IDs, codes |\n| `xsd:integer` | whole numbers |\n| `xsd:decimal` | prices, quantities |\n| `xsd:boolean` | true/false flags |\n| `xsd:date` | dates (YYYY-MM-DD) |\n| `xsd:dateTime` | timestamps |\n| `xsd:anyURI` | URLs |",
+                                            },
+                                            "object_property": {
+                                                "type": "string",
+                                                "description": "Target concept IRI — makes this a relationship (graph edge) rather than a data attribute.",
+                                                "markdownDescription": "Target concept IRI — makes this a **relationship (graph edge)** rather than a data attribute. Mutually exclusive with `datatype`.\n\nSet to the IRI of the target concept class. The binding must then define a matching entry in `relations` with the FK join.\n\nExample: `https://acme.com/ont/order#Customer` means this property links to a Customer instance.",
+                                            },
+                                            "required": {
+                                                "type": "boolean",
+                                                "description": "Whether this property must have a value. Affects OWL cardinality constraints and compiler validation.",
+                                            },
+                                            "description": {"type": "string", "description": "What this property means in the business domain."},
                                         },
                                     }
                                 },
-                                "properties": {"type": "array", "items": {"type": "object"}},
+                                "properties": {"type": "array", "items": {"type": "object"}, "description": "Legacy untyped properties list (prefer typed_properties)."},
                             }
                         }
                     }
                 }
             },
-            "assets": {"type": "array", "items": {"type": "object"}},
+            "assets": {"type": "array", "items": {"type": "object"}, "description": "Optional supplementary files bundled with this package (e.g. example queries, diagrams)."},
             "metadata": {
                 "type": "object",
                 "additionalProperties": True,
+                "description": "Optional metadata for discoverability and tooling.",
                 "properties": {
-                    "owner": {"type": "string"},
-                    "concept_only": {"type": "boolean"},
-                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "owner": {"type": "string", "description": "Team or email responsible for this package, e.g. orders@acme.com."},
+                    "concept_only": {"type": "boolean", "description": "Set to true if this package defines only abstract concepts with no direct physical binding (e.g. shared base types like Party)."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Free-form tags for search and filtering in the registry."},
                 }
             }
         }
@@ -1134,80 +1174,161 @@ def _generate_schemas(cwd: Path) -> dict:
     binding_schema = {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "VKG Physical Binding",
-        "description": "Maps an ontology package's concepts to physical Trino/Iceberg tables",
+        "description": "Connects an ontology package to physical Trino/Iceberg tables. The binding tells the VKG engine how to translate SQL rows into RDF triples — which table maps to which concept, which column maps to which property, and how FK joins become graph edges.",
         "type": "object",
         "required": ["uri", "version", "ontology_package", "source", "entities"],
         "additionalProperties": False,
         "properties": {
-            "uri": {"type": "string", "description": "Unique binding identifier, e.g. dp://o/acme/bindings/order/iceberg", "pattern": "^dp://"},
-            "version": {"type": "string", "description": "SemVer version string", "pattern": "^\\d+\\.\\d+\\.\\d+"},
-            "description": {"type": "string"},
-            "ontology_package": {"type": "string", "description": "URI of the concept package this binding implements", "pattern": "^dp://"},
-            "ontology_version_constraint": {"type": "string", "description": "SemVer constraint on the ontology package version, e.g. ^1.0.0"},
+            "uri": {
+                "type": "string",
+                "pattern": "^dp://",
+                "description": "Stable, globally unique identifier for this binding.",
+                "markdownDescription": "Stable, globally unique identifier for this binding.\n\nConvention: `dp://o/<org>/bindings/<domain>/<adapter>`\n\nExample: `dp://o/acme/bindings/order/iceberg`\n\n**Never change after publishing** — other systems reference this URI.",
+            },
+            "version": {
+                "type": "string",
+                "pattern": "^\\d+\\.\\d+\\.\\d+",
+                "description": "SemVer version of this binding, e.g. 1.0.0.",
+            },
+            "description": {"type": "string", "description": "Short summary of what physical tables this binding connects to."},
+            "ontology_package": {
+                "type": "string",
+                "pattern": "^dp://",
+                "description": "URI of the concept package this binding implements. Must match the uri field of the corresponding package YAML.",
+                "markdownDescription": "URI of the concept package this binding implements.\n\nMust exactly match the `uri` field in the corresponding package YAML.\n\nExample: `dp://o/acme/concepts/order/core`",
+            },
+            "ontology_version_constraint": {
+                "type": "string",
+                "description": "Which versions of the concept package this binding is compatible with, e.g. ^1.0.0.",
+                "markdownDescription": "Which versions of the concept package this binding is compatible with.\n\nUses standard semver range syntax:\n- `^1.0.0` — compatible with any 1.x.x (minor/patch upgrades OK, major breaking changes not)\n- `~1.2.0` — only 1.2.x patch upgrades\n- `>=1.0.0 <2.0.0` — explicit range\n\nRecommendation: use `^1.0.0` unless you need tighter control.",
+            },
             "source": {
                 "type": "object",
                 "required": ["adapter", "catalog", "schema"],
                 "additionalProperties": False,
-                "description": "Physical data source configuration",
+                "description": "Where the physical data lives — catalog, schema, and how to connect.",
+                "markdownDescription": "Where the physical data lives — catalog, schema, and how to connect.\n\nAll `entities` in this binding must have their tables in this catalog and schema.",
                 "properties": {
-                    "adapter": {"type": "string", "description": "Storage adapter type", "enum": ["trino-iceberg", "trino", "iceberg"]},
-                    "catalog": {"type": "string", "description": "Trino catalog name, e.g. minio"},
-                    "schema": {"type": "string", "description": "Iceberg schema / warehouse name"},
-                    "trino_host": {"type": "string", "description": "Trino hostname (used inside cluster)"},
-                    "trino_port": {"type": "integer", "description": "Trino port, default 8080"},
+                    "adapter": {
+                        "type": "string",
+                        "enum": ["trino-iceberg", "trino", "iceberg"],
+                        "description": "How the data is accessed.",
+                        "markdownDescription": "How the data is accessed:\n\n- **`trino-iceberg`** — Iceberg tables queried via Trino (recommended for lakehouses)\n- **`trino`** — plain Trino views or non-Iceberg tables\n- **`iceberg`** — direct Iceberg access without Trino (rare)",
+                    },
+                    "catalog": {
+                        "type": "string",
+                        "description": "Trino catalog name, e.g. minio. Must match the catalog registered in Trino.",
+                    },
+                    "schema": {
+                        "type": "string",
+                        "description": "Iceberg schema (warehouse) name, e.g. ws_orders_bronze. All tables in this binding must live in this schema.",
+                        "markdownDescription": "Iceberg schema (warehouse) name, e.g. `ws_orders_bronze`.\n\nAll tables referenced in `entities` must live under `<catalog>.<schema>`. This is the Trino schema name, which usually matches the Iceberg warehouse name.",
+                    },
+                    "trino_host": {
+                        "type": "string",
+                        "description": "Trino hostname. Use the in-cluster service name (e.g. trino) when deployed to Kubernetes.",
+                    },
+                    "trino_port": {
+                        "type": "integer",
+                        "description": "Trino port. Default is 8080 inside the cluster.",
+                    },
                 }
             },
             "entities": {
                 "type": "array",
-                "description": "Maps each ontology concept to a physical table",
+                "description": "Maps each ontology concept to a physical table. One entry per concept you want to expose as RDF nodes.",
+                "markdownDescription": "Maps each ontology concept to a physical table. One entry per concept you want to expose as RDF nodes.\n\nEach row in the table becomes one RDF node, identified by the `subject_template` IRI. Only concepts listed here (and their properties/relations below) are visible in SPARQL.",
                 "items": {
                     "type": "object",
                     "required": ["concept", "subject_template", "table", "id_column"],
                     "additionalProperties": False,
                     "properties": {
-                        "concept": {"type": "string", "description": "Concept name from the ontology package, e.g. Customer"},
-                        "subject_template": {"type": "string", "description": "IRI template for the RDF subject, e.g. https://acme.com/order/customer/{customer_id}"},
-                        "table": {"type": "string", "description": "Fully qualified Trino table name, e.g. minio.schema.customers"},
-                        "id_column": {"type": "string", "description": "Primary key column used in the subject IRI template"},
+                        "concept": {
+                            "type": "string",
+                            "description": "Concept name from the ontology package, e.g. Customer. Must match a concept name defined in the package YAML.",
+                        },
+                        "subject_template": {
+                            "type": "string",
+                            "description": "IRI template for the RDF subject. Use {column_name} to embed a column value. E.g. https://acme.com/order/customer/{customer_id}.",
+                            "markdownDescription": "IRI template that uniquely identifies each row as an RDF node. Use `{column_name}` to embed a column value.\n\nExample: `https://acme.com/order/customer/{customer_id}`\n\n**Important:** Keep these IRIs stable — they are the node identity in the knowledge graph. Changing them breaks existing SPARQL queries and links. Use a meaningful, human-readable path structure.",
+                        },
+                        "table": {
+                            "type": "string",
+                            "description": "Fully qualified Trino table name: catalog.schema.table, e.g. minio.ws_orders_bronze.customers.",
+                        },
+                        "id_column": {
+                            "type": "string",
+                            "description": "Primary key column referenced in subject_template. Must be unique per row and stable over time.",
+                            "markdownDescription": "Primary key column referenced in `subject_template`. Must be **unique per row and stable over time** — changing a row's PK value changes its RDF identity.\n\nTip: use a business key (e.g. `customer_id`) rather than a surrogate integer that might be reassigned.",
+                        },
                     }
                 }
             },
             "properties": {
                 "type": "array",
-                "description": "Maps ontology datatype properties to table columns",
+                "description": "Maps ontology data attributes to table columns. Each entry produces RDF datatype property triples.",
+                "markdownDescription": "Maps ontology data attributes to table columns.\n\nEach entry produces RDF triples of the form `<subject> <property_iri> <column_value>`. Only columns listed here are queryable as SPARQL properties.\n\nThe `concept` must match an entry in `entities`, and the `property` must match a `typed_properties` entry (with a `datatype`, not an `object_property`) in the concept definition.",
                 "items": {
                     "type": "object",
                     "required": ["concept", "property", "column"],
                     "additionalProperties": False,
                     "properties": {
-                        "concept": {"type": "string", "description": "Concept name, must match an entry in entities"},
-                        "property": {"type": "string", "description": "Property name from the ontology concept"},
-                        "column": {"type": "string", "description": "Physical column name in the table"},
+                        "concept": {
+                            "type": "string",
+                            "description": "Concept name — must match an entry in entities.",
+                        },
+                        "property": {
+                            "type": "string",
+                            "description": "Property name — must match a typed_properties entry (with datatype) in the concept definition.",
+                        },
+                        "column": {
+                            "type": "string",
+                            "description": "Physical column name in the table, e.g. customer_name.",
+                        },
                     }
                 }
             },
             "relations": {
                 "type": "array",
-                "description": "Maps ontology object properties (FK joins) to RDF links",
+                "description": "Maps FK joins between tables to RDF object property triples (graph edges between nodes).",
+                "markdownDescription": "Maps FK joins between tables to **RDF object property triples** (graph edges between nodes).\n\nEach entry says: \"the `from_column` in the source table is a foreign key that points to `to_column` in the target table — represent this join as the RDF property `object_property`.\"\n\nThis is what enables multi-hop SPARQL queries like `?order :placedBy ?customer`.\n\nBoth `from_concept` and `to_concept` must have entries in `entities`.",
                 "items": {
                     "type": "object",
                     "required": ["from_concept", "object_property", "from_column", "to_concept", "to_column"],
                     "additionalProperties": False,
                     "properties": {
-                        "from_concept": {"type": "string", "description": "Source concept name"},
-                        "object_property": {"type": "string", "description": "Full IRI of the OWL object property"},
-                        "from_column": {"type": "string", "description": "FK column in the source table"},
-                        "to_concept": {"type": "string", "description": "Target concept name"},
-                        "to_column": {"type": "string", "description": "PK column in the target table"},
+                        "from_concept": {
+                            "type": "string",
+                            "description": "The concept that holds the foreign key, e.g. Order.",
+                        },
+                        "object_property": {
+                            "type": "string",
+                            "description": "Full IRI of the OWL object property. Must match the object_property IRI set in the concept's typed_properties entry.",
+                            "markdownDescription": "Full IRI of the OWL object property that this FK join implements.\n\nMust match the `object_property` value in the corresponding `typed_properties` entry of `from_concept` in the package YAML.\n\nExample: `https://acme.com/ont/order#placedBy`",
+                        },
+                        "from_column": {
+                            "type": "string",
+                            "description": "Foreign key column in the from_concept's table that references the to_concept, e.g. customer_id in the orders table.",
+                            "markdownDescription": "Foreign key column in `from_concept`'s table.\n\nThis column holds values that match `to_column` in the target table. For example, `customer_id` in the `orders` table references `customer_id` in the `customers` table.",
+                        },
+                        "to_concept": {
+                            "type": "string",
+                            "description": "The target concept that the FK points to, e.g. Customer.",
+                        },
+                        "to_column": {
+                            "type": "string",
+                            "description": "Primary key column in the to_concept's table that the FK references, e.g. customer_id in the customers table.",
+                        },
                     }
                 }
             },
             "metadata": {
                 "type": "object",
                 "additionalProperties": True,
+                "description": "Optional metadata for discoverability and tooling.",
                 "properties": {
-                    "owner": {"type": "string"},
-                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "owner": {"type": "string", "description": "Team or email responsible for this binding, e.g. data-platform@acme.com."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Free-form tags for search and filtering in the registry."},
                 }
             }
         }
