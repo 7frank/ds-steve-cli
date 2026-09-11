@@ -78,6 +78,59 @@ def ontology():
     """Manage VKG ontology packages and compile artifacts."""
 
 
+@ontology.command("init")
+@click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True)
+@click.option("--org", envvar="REGISTRY_ORG", default="acme", show_default=True)
+@click.option("--name", default="my-domain", show_default=True)
+@click.option("--force", is_flag=True, default=False)
+def init_cmd(manifest_file: str, org: str, name: str, force: bool):
+    """Create an ontology.yaml stub in the current directory."""
+    if name == "my-domain":
+        pyproject = Path.cwd() / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                import tomllib
+            except ImportError:
+                try:
+                    import tomli as tomllib  # type: ignore[no-redef]
+                except ImportError:
+                    tomllib = None
+            if tomllib is not None:
+                with open(pyproject, "rb") as f:
+                    pdata = tomllib.load(f)
+                inferred = pdata.get("project", {}).get("name", "")
+                if inferred:
+                    name = inferred
+
+    path = Path.cwd() / manifest_file
+    if path.exists() and not force:
+        click.secho(f"✗ {manifest_file} already exists. Use --force to overwrite.", fg="red", err=True)
+        sys.exit(1)
+
+    stub = f"""\
+# Ontology manifest — edit to match your domain
+packages: []
+#  - ontologies/{name.replace('-', '_')}_core.yaml
+
+bindings: []
+#  - ontologies/binding_{name.replace('-', '_')}_iceberg.yaml
+
+compile:
+  root: dp://o/{org}/concepts/{name}/core
+  binding: dp://o/{org}/bindings/{name}/iceberg
+
+dependencies: []
+#  - dp://o/{org}/concepts/party/core
+"""
+    path.write_text(stub)
+    click.secho(f"✓ Created {manifest_file}", fg="green")
+
+    ontologies_dir = Path.cwd() / "ontologies"
+    if not ontologies_dir.exists():
+        ontologies_dir.mkdir()
+        click.secho("✓ Created ontologies/", fg="green")
+
+
 @ontology.command("ls")
 @click.argument("query", default="", required=False)
 @click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
