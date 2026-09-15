@@ -810,8 +810,9 @@ def tables(env_file: tuple):
     for ef in env_files:
         load_dotenv(ef)
 
-    if not os.getenv("TRINO_ENDPOINT"):
-        click.secho("TRINO_ENDPOINT is not set — Trino is not available.", fg="yellow")
+    from steve_cli.auth import get_service_url
+    if not get_service_url("trino", os.getenv("WORKSPACE_ID")):
+        click.secho("Not logged in — run `steve login` to configure credentials.", fg="yellow")
         return
 
     tiers = ["bronze", "silver", "gold"]
@@ -834,7 +835,7 @@ def tables(env_file: tuple):
             })
 
     if not options:
-        click.echo("No Trino storage env variables found (expected: TRINO_ENDPOINT + BRONZE_ACCESS_KEY or {WORKSPACE}_ACCESS_KEY).")
+        click.echo("No Trino storage variables found (expected: BRONZE_ACCESS_KEY or {WORKSPACE}_ACCESS_KEY).")
         return
 
     choice = questionary.select(
@@ -899,6 +900,70 @@ def policies_apply(file: Path | None):
     except Exception as e:
         click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
         sys.exit(1)
+
+
+@main.command("login")
+@click.option("--token", default=None, help="Service principal token (stp_...) to save")
+@click.option("--workspace", "workspace_id", default=None, help="Workspace ID (defaults to WORKSPACE_ID from .env)")
+@click.option("--url", "base_url", default=None, help="Platform root host, e.g. jds-dev.internal.jambit.io")
+@click.option("--workspace-name", "workspace_name_opt", default=None, help="Workspace name")
+@click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
+              help='Path to .env file(s). Defaults to .env and .workspaces.env')
+def login(token: str | None, workspace_id: str | None, base_url: str | None, workspace_name_opt: str | None, env_file: tuple):
+    """Print CLI access URLs or save a service principal token."""
+    cwd = Path.cwd()
+    env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
+    for ef in env_files:
+        load_dotenv(ef)
+
+    resolved_workspace = workspace_id or os.getenv("WORKSPACE_ID")
+    workspace_name = workspace_name_opt or os.getenv("WORKSPACE_NAME") or resolved_workspace
+
+    if token:
+        from steve_cli.auth import save_credentials
+        if not token.startswith("stp_"):
+            click.secho("Token must start with 'stp_'. Create one in the workspace CLI Access tab.", fg="red", err=True)
+            raise SystemExit(1)
+        if not resolved_workspace:
+            click.secho("Could not resolve workspace ID. Set WORKSPACE_ID in .env or pass --workspace.", fg="red", err=True)
+            raise SystemExit(1)
+        click.echo(f"\nYou are about to log in to workspace {click.style(workspace_name, fg='cyan', bold=True)} ({resolved_workspace})")
+        save_credentials(resolved_workspace, token, base_url=base_url, workspace_name=workspace_name)
+        if base_url:
+            click.echo(f"Platform: {base_url}")
+        click.secho(f"Logged in. Credentials saved to ~/.steve/credentials.json", fg="green")
+        return
+
+    if not resolved_workspace:
+        click.secho("WORKSPACE_ID is not set. Source your .env file or pass --workspace.", fg="yellow")
+        raise SystemExit(1)
+
+    dev_url = f"https://datameshx.jds-dev.internal.jambit.io/workspaces/{resolved_workspace}?tab=cli"
+    prod_url = f"https://datameshx.jds.internal.jambit.io/workspaces/{resolved_workspace}?tab=cli"
+
+    click.echo(f"\nLogging in to workspace {click.style(workspace_name, fg='cyan', bold=True)}:\n")
+    click.echo(f"  Dev:  {click.style(dev_url, fg='blue', underline=True)}")
+    click.echo(f"  Prod: {click.style(prod_url, fg='blue', underline=True)}")
+    click.echo(f"\nOpen the URL, copy the token, then run:")
+    click.echo(f"  {click.style('steve login --token stp_...', fg='green')}\n")
+
+
+@main.command("logout")
+@click.option("--workspace", "workspace_id", default=None, help="Workspace ID to log out of (defaults to all)")
+@click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True)
+def logout(workspace_id: str | None, env_file: tuple):
+    """Remove saved CLI credentials."""
+    from steve_cli.auth import clear_credentials
+    cwd = Path.cwd()
+    env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
+    for ef in env_files:
+        load_dotenv(ef)
+    resolved_workspace = workspace_id or os.getenv("WORKSPACE_ID")
+    clear_credentials(resolved_workspace)
+    if resolved_workspace:
+        click.secho(f"Credentials removed for workspace {resolved_workspace}.", fg="green")
+    else:
+        click.secho("All credentials removed.", fg="green")
 
 
 @main.command("upgrade")

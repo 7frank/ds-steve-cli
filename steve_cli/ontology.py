@@ -421,7 +421,8 @@ def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path | No
     if output_dir is None:
         output_dir = Path("vkg_modules") / ".build" / Path(manifest_file).stem
 
-    trino_endpoint = os.getenv("TRINO_ENDPOINT")
+    from steve_cli.auth import get_service_url
+    trino_endpoint = get_service_url("trino", os.getenv("WORKSPACE_ID"))
 
     click.echo(f"Building from {manifest_file} …")
     artifact, tables = _compile_local(manifest, cwd)
@@ -1548,7 +1549,8 @@ def push_cmd(
             click.secho("✓ Lock is current (--frozen)", fg="green")
             return
 
-        trino_endpoint = os.getenv("TRINO_ENDPOINT")
+        from steve_cli.auth import get_service_url
+        trino_endpoint = get_service_url("trino", os.getenv("WORKSPACE_ID"))
         click.echo(f"Pushing workspace from {chosen} …")
         artifact, tables = _compile_local(manifest, cwd)
         snapshots = _capture_snapshots(tables, trino_endpoint) if trino_endpoint and tables else {}
@@ -1578,7 +1580,7 @@ def push_cmd(
 _BIND_OPTIONS = [
     click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True),
     click.option("-b", "--binding", "binding_file", default=None, help="Binding YAML path (default: first entry in manifest bindings:)"),
-    click.option("--trino-endpoint", envvar="TRINO_ENDPOINT", default=None),
+    click.option("--trino-endpoint", default=None),
 ]
 
 

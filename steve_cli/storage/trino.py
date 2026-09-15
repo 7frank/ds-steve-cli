@@ -22,9 +22,11 @@ def _derive_schema(tier: str, workspace: str | None) -> str | None:
 
 class TrinoStorage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
-        trino_endpoint = os.getenv("TRINO_ENDPOINT")
+        from steve_cli.auth import get_service_url
+        self._workspace_id = os.getenv("WORKSPACE_ID")
+        trino_endpoint = get_service_url("trino", self._workspace_id)
         if not trino_endpoint:
-            raise EnvironmentError("TRINO_ENDPOINT is not set — Trino is not available in this environment")
+            raise EnvironmentError("Trino endpoint not found — run `steve login` to configure credentials")
         self.catalog = os.getenv("TRINO_CATALOG", "minio")
         resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
         self.schema = _derive_schema(tier, resolved_workspace) or os.environ.get("TRINO_SCHEMA", "")
@@ -92,11 +94,15 @@ class TrinoStorage:
         return self.__iceberg_catalog
 
     def _execute(self, sql: str) -> list[dict]:
+        from steve_cli.auth import get_token
         headers = {
             "X-Trino-User": self.user,
             "X-Trino-Catalog": self.catalog,
             "X-Trino-Schema": self.schema,
         }
+        token = get_token(self._workspace_id)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
         resp.raise_for_status()
         data = resp.json()
