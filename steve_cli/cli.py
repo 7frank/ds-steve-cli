@@ -805,14 +805,14 @@ def _list_trino_tables(storage_kwargs: dict, label: str) -> tuple:
               help='Path to .env file(s). Can be specified multiple times. Defaults to .env and .workspaces.env')
 def tables(env_file: tuple):
     """List Iceberg tables via Trino and view their contents."""
-    if not os.getenv("TRINO_ENDPOINT"):
-        click.secho("TRINO_ENDPOINT is not set — Trino is not available.", fg="yellow")
-        return
-
     cwd = Path.cwd()
     env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
     for ef in env_files:
         load_dotenv(ef)
+
+    if not os.getenv("TRINO_ENDPOINT"):
+        click.secho("TRINO_ENDPOINT is not set — Trino is not available.", fg="yellow")
+        return
 
     tiers = ["bronze", "silver", "gold"]
     options: List[Dict[str, Any]] = []
