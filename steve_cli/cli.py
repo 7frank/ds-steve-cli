@@ -101,9 +101,14 @@ def run_job_command(job: Dict[str, Any]) -> int:
 
 
 @click.group()
-def main():
+@click.option('--trace', is_flag=True, default=False, help='Print timing information for Trino queries.', envvar='STEVE_TRACE')
+@click.pass_context
+def main(ctx: click.Context, trace: bool):
     """Steve CLI - Run jobs and manage environment setup."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['trace'] = trace
+    if trace:
+        os.environ['STEVE_TRINO_TRACE'] = '1'
 
 
 @main.group(invoke_without_command=True)
@@ -803,7 +808,12 @@ def _list_trino_tables(storage_kwargs: dict, label: str) -> tuple:
 @main.command("tables")
 @click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
               help='Path to .env file(s). Can be specified multiple times. Defaults to .env and .workspaces.env')
-def tables(env_file: tuple):
+@click.option('--schema', '-s', default=None,
+              help='Schema to use, e.g. "default/bronze" or "myworkspace/silver". Skips interactive prompt.')
+@click.option('--table', '-t', default=None,
+              help='Table name to open directly. Skips interactive prompt.')
+@click.pass_context
+def tables(ctx: click.Context, env_file: tuple, schema: str | None, table: str | None):
     """List Iceberg tables via Trino and view their contents."""
     cwd = Path.cwd()
     env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
@@ -838,27 +848,44 @@ def tables(env_file: tuple):
         click.echo("No Trino storage variables found (expected: BRONZE_ACCESS_KEY or {WORKSPACE}_ACCESS_KEY).")
         return
 
-    choice = questionary.select(
-        "Select a schema to list:",
-        choices=[o["label"] for o in options],
-    ).ask()
+    if schema:
+        parts = [p.strip() for p in schema.split("/")]
+        if len(parts) == 2:
+            ws_part, tier_part = parts
+            normalized = f"{ws_part} / {tier_part}"
+            selected = next((o for o in options if o["label"].lower() == normalized.lower()), None)
+            if not selected:
+                click.secho(f"Schema '{schema}' not found. Available: {', '.join(o['label'] for o in options)}", fg="red")
+                return
+        else:
+            click.secho("--schema must be in format 'workspace/tier' or 'default/tier'", fg="red")
+            return
+    else:
+        choice = questionary.select(
+            "Select a schema to list:",
+            choices=[o["label"] for o in options],
+        ).ask()
+        if choice is None:
+            sys.exit(0)
+        selected = next(o for o in options if o["label"] == choice)
 
-    if choice is None:
-        sys.exit(0)
-
-    selected = next(o for o in options if o["label"] == choice)
     storage, table_names = _list_trino_tables(selected["kwargs"], selected["label"])
 
     if not storage or not table_names:
         return
 
-    table_choice = questionary.select(
-        "View a table (or press Esc to exit):",
-        choices=["(done)"] + table_names,
-    ).ask()
-
-    if not table_choice or table_choice == "(done)":
-        return
+    if table:
+        if table not in table_names:
+            click.secho(f"Table '{table}' not found. Available: {', '.join(table_names)}", fg="red")
+            return
+        table_choice = table
+    else:
+        table_choice = questionary.select(
+            "View a table (or press Esc to exit):",
+            choices=["(done)"] + table_names,
+        ).ask()
+        if not table_choice or table_choice == "(done)":
+            return
 
     click.echo(f"\n📊 {click.style(table_choice, fg='cyan')}\n")
     try:

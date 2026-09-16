@@ -95,6 +95,7 @@ class TrinoStorage:
 
     def _execute(self, sql: str) -> list[dict]:
         from steve_cli.auth import get_token
+        trace = os.getenv("STEVE_TRINO_TRACE") == "1"
         headers = {
             "X-Trino-User": self.user,
             "X-Trino-Catalog": self.catalog,
@@ -103,10 +104,16 @@ class TrinoStorage:
         token = get_token(self._workspace_id)
         if token:
             headers["Authorization"] = f"Bearer {token}"
+
+        t0 = time.perf_counter()
         resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
         resp.raise_for_status()
+        if trace:
+            logger.warning("[trino] POST /v1/statement: %.3fs", time.perf_counter() - t0)
+
         data = resp.json()
         rows: list[dict] = []
+        poll = 0
         while True:
             if "data" in data and "columns" in data:
                 col_names = [c["name"] for c in data["columns"]]
@@ -116,11 +123,18 @@ class TrinoStorage:
             if not next_uri:
                 break
             time.sleep(0.1)
-            ## TODO evaluate this line what its for
             next_uri = next_uri.replace("http://trino:8080", self._base).replace("https://trino:8080", self._base)
+            t_poll = time.perf_counter()
             resp = requests.get(next_uri, headers=headers)
             resp.raise_for_status()
+            poll += 1
+            if trace:
+                logger.warning("[trino] poll #%d: %.3fs (total %.3fs, %d rows so far)",
+                               poll, time.perf_counter() - t_poll, time.perf_counter() - t0, len(rows))
             data = resp.json()
+
+        if trace:
+            logger.warning("[trino] query done: %.3fs total, %d rows, %d polls", time.perf_counter() - t0, len(rows), poll)
         return rows
 
     @staticmethod
