@@ -812,8 +812,11 @@ def _list_trino_tables(storage_kwargs: dict, label: str) -> tuple:
               help='Schema to use, e.g. "default/bronze" or "myworkspace/silver". Skips interactive prompt.')
 @click.option('--table', '-t', default=None,
               help='Table name to open directly. Skips interactive prompt.')
+@click.option('--output', '-o', default='visidata',
+              type=click.Choice(['visidata', 'table', 'csv', 'json']),
+              help='Output format: visidata (interactive), table, csv, or json.')
 @click.pass_context
-def tables(ctx: click.Context, env_file: tuple, schema: str | None, table: str | None):
+def tables(ctx: click.Context, env_file: tuple, schema: str | None, table: str | None, output: str):
     """List Iceberg tables via Trino and view their contents."""
     cwd = Path.cwd()
     env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
@@ -889,15 +892,41 @@ def tables(ctx: click.Context, env_file: tuple, schema: str | None, table: str |
 
     click.echo(f"\n📊 {click.style(table_choice, fg='cyan')}\n")
     try:
-        import tempfile
-        data = storage.get_bytes(table_choice)
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        if not shutil.which("vd"):
-            click.secho("visidata not found. Install it with: uv pip install 'steve-cli[visidata]'", fg="yellow")
-            return
-        subprocess.call(["vd", tmp_path])
+        if output == 'visidata':
+            import tempfile
+            data = storage.get_bytes(table_choice)
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            if not shutil.which("vd"):
+                click.secho("visidata not found. Install it with: uv pip install 'steve-cli[visidata]'", fg="yellow")
+                return
+            subprocess.call(["vd", tmp_path])
+        else:
+            rows = storage._execute(f"SELECT * FROM {storage.catalog}.{storage.schema}.{storage._table_name(table_choice)}")
+            if not rows:
+                click.echo("(no rows)")
+                return
+            if output == 'json':
+                import json
+                click.echo(json.dumps(rows, indent=2, default=str))
+            elif output == 'csv':
+                import csv
+                import io as _io
+                buf = _io.StringIO()
+                writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+                click.echo(buf.getvalue(), nl=False)
+            elif output == 'table':
+                cols = list(rows[0].keys())
+                widths = [max(len(c), max(len(str(r.get(c, ''))) for r in rows)) for c in cols]
+                header = '  '.join(c.ljust(w) for c, w in zip(cols, widths))
+                sep = '  '.join('-' * w for w in widths)
+                click.echo(header)
+                click.echo(sep)
+                for row in rows:
+                    click.echo('  '.join(str(row.get(c, '')).ljust(w) for c, w in zip(cols, widths)))
     except Exception as e:
         click.secho(f"❌ Could not open table: {e}", fg="red", err=True)
 
