@@ -116,6 +116,8 @@ class TrinoStorage:
             if not next_uri:
                 break
             time.sleep(0.1)
+            ## TODO evaluate this line what its for
+            next_uri = next_uri.replace("http://trino:8080", self._base).replace("https://trino:8080", self._base)
             resp = requests.get(next_uri, headers=headers)
             resp.raise_for_status()
             data = resp.json()
