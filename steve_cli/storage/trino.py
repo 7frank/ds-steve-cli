@@ -26,7 +26,16 @@ class TrinoStorage:
         self._workspace_id = os.getenv("WORKSPACE_ID")
         trino_endpoint = get_service_url("trino", self._workspace_id)
         if not trino_endpoint:
-            raise EnvironmentError("Trino endpoint not found — run `steve login` to configure credentials")
+            from steve_cli.auth import _get_workspace_entry
+            entry = _get_workspace_entry(self._workspace_id)
+            checks = [
+                ("✓" if entry else "✗", "credentials found in ~/.steve/credentials.json"),
+                ("✓" if entry.get("token") else "✗", "token present"),
+                ("✓" if entry.get("base_url") else "✗", "base_url present (STEVE_BASE_URL configured on automation-kernel)"),
+                ("✓" if self._workspace_id else "✗", f"WORKSPACE_ID env var set (got: {self._workspace_id!r})"),
+            ]
+            detail = "\n".join(f"  {mark} {desc}" for mark, desc in checks)
+            raise EnvironmentError(f"Trino endpoint not found:\n{detail}")
         self.catalog = os.getenv("TRINO_CATALOG", "minio")
         resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
         self.schema = _derive_schema(tier, resolved_workspace) or os.environ.get("TRINO_SCHEMA", "")
