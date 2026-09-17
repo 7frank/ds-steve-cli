@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -18,22 +17,10 @@ class PolicyClient:
         workspace_id: str | None = None,
     ):
         from steve_cli.auth import get_service_url, get_token
-        resolved_via_proxy = False
         if endpoint is None:
-            pcp_url = get_service_url("pcp", workspace_id)
-            endpoint = (
-                os.environ.get("PCP_ENDPOINT")
-                or pcp_url
-                or "http://policy-control-plane:3010"
-            )
-            resolved_via_proxy = bool(pcp_url and not os.environ.get("PCP_ENDPOINT"))
+            endpoint = get_service_url("pcp", workspace_id) or "http://policy-control-plane:3010"
         self.endpoint = endpoint.rstrip("/")
-        if token:
-            self.token = token
-        elif resolved_via_proxy:
-            self.token = get_token(workspace_id) or os.environ.get("PCP_TOKEN", "")
-        else:
-            self.token = os.environ.get("PCP_TOKEN", "")
+        self.token = token or get_token(workspace_id) or ""
 
     def __trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f"{self.endpoint}/api/trpc/{path}"
@@ -55,7 +42,7 @@ class PolicyClient:
         except httpx.ConnectError as e:
             raise EnvironmentError(
                 f"Cannot reach Policy Control Plane at {self.endpoint} — "
-                f"set PCP_ENDPOINT in your .env"
+                f"run `steve login` to configure credentials"
             ) from e
 
     def register_pdp(self, name: str, endpoint: str, pdp_type: str = "opa", is_default: bool = True) -> dict:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -61,9 +60,6 @@ def _get_workspace_entry(workspace_id: Optional[str]) -> dict:
 
 
 def get_token(workspace_id: Optional[str] = None) -> Optional[str]:
-    env_token = os.getenv("STEVE_TOKEN")
-    if env_token:
-        return env_token
     return _get_workspace_entry(workspace_id).get("token")
 
 
