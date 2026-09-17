@@ -67,8 +67,12 @@ def lineage_job(
                 import click
                 from steve_cli.validation.port import DataQualityError
                 if isinstance(exc, (DataQualityError, EnvironmentError)):
-                    click.secho(f"ERROR {exc}", fg="red", bold=True, err=True)
+                    click.secho(f"ERROR [{job_name}] {exc}", fg="red", bold=True, err=True)
                     sys.exit(1)
+                click.secho(
+                    f"ERROR [{job_name}] {type(exc).__name__}: {exc}",
+                    fg="red", bold=True, err=True,
+                )
                 raise
 
             session.complete()

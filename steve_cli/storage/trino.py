@@ -35,12 +35,12 @@ class TrinoStorage:
                 ("✓" if self._workspace_id else "✗", f"WORKSPACE_ID env var set (got: {self._workspace_id!r})"),
             ]
             detail = "\n".join(f"  {mark} {desc}" for mark, desc in checks)
-            raise EnvironmentError(f"Trino endpoint not found:\n{detail}")
+            raise OSError(f"Trino endpoint not found:\n{detail}")
         self.catalog = os.getenv("TRINO_CATALOG", "minio")
         resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
         self.schema = _derive_schema(tier, resolved_workspace) or os.environ.get("TRINO_SCHEMA", "")
         if not self.schema:
-            raise EnvironmentError("TRINO_SCHEMA is not set and no WORKSPACE_NAME or workspace was provided")
+            raise OSError("TRINO_SCHEMA is not set and no WORKSPACE_NAME or workspace was provided")
         self.user = os.getenv("TRINO_USER", "admin")
         self._base = trino_endpoint.rstrip("/")
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT")
@@ -115,8 +115,19 @@ class TrinoStorage:
             headers["Authorization"] = f"Bearer {token}"
 
         t0 = time.perf_counter()
-        resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
-        resp.raise_for_status()
+        try:
+            resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
+        except requests.exceptions.ConnectionError as exc:
+            raise OSError(
+                f"TrinoStorage: cannot connect to Trino at {self._base} — "
+                f"check WORKSPACE_ID env var and credentials in ~/.steve/credentials.json"
+            ) from exc
+        if not resp.ok:
+            raise OSError(
+                f"TrinoStorage: POST /v1/statement failed with HTTP {resp.status_code} "
+                f"[url={self._base}] — auth proxy may not be routing to Trino, "
+                f"or the workspace is not accessible (sql: {sql[:100]!r})"
+            )
         if trace:
             logger.warning("[trino] POST /v1/statement: %.3fs", time.perf_counter() - t0)
 
@@ -134,8 +145,18 @@ class TrinoStorage:
             time.sleep(0.1)
             next_uri = next_uri.replace("http://trino:8080", self._base).replace("https://trino:8080", self._base)
             t_poll = time.perf_counter()
-            resp = requests.get(next_uri, headers=headers)
-            resp.raise_for_status()
+            try:
+                resp = requests.get(next_uri, headers=headers)
+            except requests.exceptions.ConnectionError as exc:
+                raise OSError(
+                    f"TrinoStorage: connection lost while polling Trino result [url={next_uri}] — "
+                    f"sql: {sql[:100]!r}"
+                ) from exc
+            if not resp.ok:
+                raise OSError(
+                    f"TrinoStorage: result poll failed with HTTP {resp.status_code} "
+                    f"[url={next_uri}] — Trino rejected query (sql: {sql[:100]!r})"
+                )
             poll += 1
             if trace:
                 logger.warning("[trino] poll #%d: %.3fs (total %.3fs, %d rows so far)",
@@ -162,7 +183,15 @@ class TrinoStorage:
         return self.list()
 
     def get_bytes(self, path: str) -> bytes:
-        rows = self._execute(f"SELECT * FROM {self.catalog}.{self.schema}.{self._table_name(path)}")
+        table_ref = f"{self.catalog}.{self.schema}.{self._table_name(path)}"
+        try:
+            rows = self._execute(f"SELECT * FROM {table_ref}")
+        except OSError:
+            raise
+        except Exception as exc:
+            raise OSError(
+                f"TrinoStorage: read from '{table_ref}' failed — {type(exc).__name__}: {exc}"
+            ) from exc
         if not rows:
             return b""
         arrow_table = pa.Table.from_pylist(rows)
@@ -176,11 +205,24 @@ class TrinoStorage:
 
     def _ensure_namespace(self) -> None:
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
+        lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
         try:
             self._iceberg_catalog.create_namespace(self.schema)
             logger.info("Created namespace %s", self.schema)
         except NamespaceAlreadyExistsError:
             pass
+        except Exception as exc:
+            msg = str(exc)
+            if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
+                raise OSError(
+                    f"TrinoStorage: namespace '{self.schema}' creation denied at Lakekeeper "
+                    f"[{lakekeeper_base}] — check that the token has write access to warehouse "
+                    f"'{self._lakekeeper_warehouse}'"
+                ) from exc
+            raise OSError(
+                f"TrinoStorage: namespace '{self.schema}' creation failed at Lakekeeper "
+                f"[{lakekeeper_base}] — {type(exc).__name__}: {exc}"
+            ) from exc
 
     def put_bytes(self, data: bytes, path: str) -> None:
         from pyiceberg.exceptions import NoSuchTableError
@@ -188,12 +230,29 @@ class TrinoStorage:
         arrow_table = pq.read_table(io.BytesIO(data))
         table_id = f"{self.schema}.{self._table_name(path)}"
         catalog = self._iceberg_catalog
+        lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
 
         self._ensure_namespace()
 
+        def _append(iceberg_table, arrow_table, table_id):
+            try:
+                iceberg_table.append(arrow_table)
+            except Exception as exc:
+                msg = str(exc)
+                if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
+                    raise OSError(
+                        f"TrinoStorage: write to '{table_id}' denied via Lakekeeper [{lakekeeper_base}] — "
+                        f"Access Denied on warehouse '{self._lakekeeper_warehouse}' "
+                        f"(check S3 bucket policy and token permissions)"
+                    ) from exc
+                raise OSError(
+                    f"TrinoStorage: write to '{table_id}' failed via Lakekeeper [{lakekeeper_base}] — "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
         try:
             iceberg_table = catalog.load_table(table_id)
-            iceberg_table.append(arrow_table)
+            _append(iceberg_table, arrow_table, table_id)
         except NoSuchTableError:
             from pyiceberg.schema import Schema
             from pyiceberg.types import (
@@ -230,8 +289,21 @@ class TrinoStorage:
                 fields.append(NestedField(field_id=i + 1, name=field.name, field_type=iceberg_type, required=not field.nullable))
 
             iceberg_schema = Schema(*fields)
-            iceberg_table = catalog.create_table(table_id, schema=iceberg_schema)
-            iceberg_table.append(arrow_table)
+            try:
+                iceberg_table = catalog.create_table(table_id, schema=iceberg_schema)
+            except Exception as exc:
+                msg = str(exc)
+                if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
+                    raise OSError(
+                        f"TrinoStorage: create table '{table_id}' denied via Lakekeeper [{lakekeeper_base}] — "
+                        f"Access Denied on warehouse '{self._lakekeeper_warehouse}' "
+                        f"(check S3 bucket policy and token permissions)"
+                    ) from exc
+                raise OSError(
+                    f"TrinoStorage: create table '{table_id}' failed via Lakekeeper [{lakekeeper_base}] — "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            _append(iceberg_table, arrow_table, table_id)
 
         logger.info("Written %d rows to %s", len(arrow_table), table_id)
 
