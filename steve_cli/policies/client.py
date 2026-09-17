@@ -15,9 +15,25 @@ class PolicyClient:
         self,
         endpoint: str | None = None,
         token: str | None = None,
+        workspace_id: str | None = None,
     ):
-        self.endpoint = (endpoint or os.environ.get("PCP_ENDPOINT", "http://policy-control-plane:3010")).rstrip("/")
-        self.token = token or os.environ.get("PCP_TOKEN", "")
+        from steve_cli.auth import get_service_url, get_token
+        resolved_via_proxy = False
+        if endpoint is None:
+            pcp_url = get_service_url("pcp", workspace_id)
+            endpoint = (
+                os.environ.get("PCP_ENDPOINT")
+                or pcp_url
+                or "http://policy-control-plane:3010"
+            )
+            resolved_via_proxy = bool(pcp_url and not os.environ.get("PCP_ENDPOINT"))
+        self.endpoint = endpoint.rstrip("/")
+        if token:
+            self.token = token
+        elif resolved_via_proxy:
+            self.token = get_token(workspace_id) or os.environ.get("PCP_TOKEN", "")
+        else:
+            self.token = os.environ.get("PCP_TOKEN", "")
 
     def __trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f"{self.endpoint}/api/trpc/{path}"
@@ -30,7 +46,8 @@ class PolicyClient:
         data = resp.json()
         if "error" in data:
             raise RuntimeError(f"tRPC error on {path}: {data['error']}")
-        return data.get("result", {}).get("data", data.get("result", {}))
+        result = data.get("result", {})
+        return result.get("data", {}).get("json", result.get("data", result))
 
     def _trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
         try:
