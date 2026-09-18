@@ -1220,7 +1220,7 @@ def status(env_file: tuple, no_check: bool):
         if trino_schema_explicit:
             break
 
-    lakekeeper = os.getenv("LAKEKEEPER_ENDPOINT", "")
+    lakekeeper = os.getenv("LAKEKEEPER_ENDPOINT", "") or get_service_url("lakekeeper", workspace_id or None)
 
     _section("Connectivity")
     _cred_s3 = entry.get("s3_endpoint", "")
@@ -1259,7 +1259,7 @@ def status(env_file: tuple, no_check: bool):
     if lakekeeper:
         _check("Lakekeeper", f"{lakekeeper}/catalog/v1/config")
     else:
-        _row("Lakekeeper", "(not configured — LAKEKEEPER_ENDPOINT not set)", "bright_black")
+        _row("Lakekeeper", "(not configured — set LAKEKEEPER_ENDPOINT or login with --url)", "bright_black")
 
     _section("Environment")
     for ef in env_files:
