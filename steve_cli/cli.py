@@ -1048,15 +1048,21 @@ def status(env_file: tuple, no_check: bool):
     def _row(label: str, value: str, value_color: str = "white") -> None:
         click.echo(f"  {click.style(label.ljust(14), fg='bright_black')}  {click.style(value, fg=value_color)}")
 
-    def _check(label: str, url: str, timeout: int = 2) -> None:
+    def _check(label: str, url: str, timeout: int = 2, token: str = "") -> None:
         if no_check:
             _row(label, "(skipped)", "bright_black")
             return
         try:
-            urllib.request.urlopen(url, timeout=timeout)
+            req = urllib.request.Request(url)
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                _row(label, f"✓ reachable  ({url})", "green")
+                return r.read()
+        except urllib.error.HTTPError:
             _row(label, f"✓ reachable  ({url})", "green")
-        except Exception:
-            _row(label, f"✗ unreachable  ({url})", "red")
+        except Exception as e:
+            _row(label, f"✗ unreachable  ({url}): {e}", "red")
 
     click.echo(f"\n{click.style('●', fg='green')} Steve CLI {click.style('v' + version, fg='cyan', bold=True)}")
 
@@ -1181,7 +1187,24 @@ def status(env_file: tuple, no_check: bool):
     s3_endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
     _check("S3 endpoint", s3_endpoint)
     if trino_endpoint:
-        _check("Trino", f"{trino_endpoint}/v1/info")
+        if no_check:
+            _row("Trino", "(skipped)", "bright_black")
+        else:
+            try:
+                import json as _json
+                req = urllib.request.Request(f"{trino_endpoint}/v1/info")
+                if token:
+                    req.add_header("Authorization", f"Bearer {token}")
+                req.add_header("X-Trino-User", os.getenv("TRINO_USER", "admin"))
+                with urllib.request.urlopen(req, timeout=3) as r:
+                    info = _json.loads(r.read())
+                version_str = info.get("nodeVersion", {}).get("version", "?")
+                state = info.get("state", "?")
+                uptime = info.get("uptime", "")
+                detail = f"v{version_str} {state.lower()}" + (f", up {uptime}" if uptime else "")
+                _row("Trino", f"✓ reachable  ({detail})  {trino_endpoint}", "green")
+            except Exception as e:
+                _row("Trino", f"✗ unreachable: {e}", "red")
     else:
         _row("Trino", "✗ not configured", "yellow")
     if lakekeeper:
