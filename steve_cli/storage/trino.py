@@ -46,7 +46,11 @@ class TrinoStorage:
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT") or get_service_url("lakekeeper", self._workspace_id)
         default_warehouse = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_warehouse)
-        self._iceberg_location_prefix = f"_iceberg/{self._branch}"
+        _iceberg_bucket = os.getenv(f"{tier.upper()}_BUCKET", "")
+        if _iceberg_bucket:
+            self._iceberg_location_prefix = f"s3://{_iceberg_bucket}/_iceberg/{self._branch}"
+        else:
+            self._iceberg_location_prefix = f"_iceberg/{self._branch}"
         self.__iceberg_catalog = None
 
     @property
@@ -56,24 +60,44 @@ class TrinoStorage:
             from pyiceberg.io import load_file_io
             from pyiceberg.table import Table
 
-            # FIXME: Interim workaround — pyiceberg cannot use Lakekeeper's remote signing
-            # endpoint when running outside the cluster (hostname 'lakekeeper' doesn't resolve
-            # locally). We subclass RestCatalog to inject our local signer URI after pyiceberg
-            # merges table config (which overwrites s3.signer.uri with the internal hostname).
-            # Remove once Increment 5 (STS credential vending) is wired.
+            # WORKAROUND: Lakekeeper's remote S3 presigner is bypassed for external access.
+            #
+            # Lakekeeper returns `s3.signer` / `s3.signer.uri` in the table config, which
+            # pyiceberg uses to sign S3 requests via Lakekeeper's signing endpoint. This works
+            # inside the cluster but fails from a laptop because:
+            #   1. The signed URI Lakekeeper produces contains the cluster-internal hostname
+            #      (e.g. http://minio:9000) which is unreachable externally.
+            #   2. Even after overriding the signer URI to the public lakekeeper subdomain,
+            #      Lakekeeper's signer returns HTTP 500 for URIs with the public minio hostname
+            #      because it only knows the internal minio endpoint.
+            #
+            # Current workaround: strip all signer config from the merged table properties and
+            # use direct S3 credentials (access-key + secret-key) with the public minio endpoint
+            # from ~/.steve/credentials.json. This bypasses Lakekeeper's access control for S3
+            # writes — credentials live on disk rather than being vended by the cluster.
+            #
+            # To revert: configure Lakekeeper with its public S3 endpoint so presigned URIs
+            # contain a resolvable hostname, then remove the merged.pop() calls below and
+            # restore `s3.signer.uri: lakekeeper_base` in s3_overrides.
             tier = self._tier.upper()
-            lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
+            _lk = self._lakekeeper_endpoint or "http://lakekeeper:8181"
+            lakekeeper_base = _lk.rstrip("/") + "/catalog"
+            from steve_cli.auth import get_s3_endpoint as _get_s3_ep
+            _s3_ep = _get_s3_ep(self._workspace_id) or os.getenv("S3_ENDPOINT", "http://minio:9000")
             s3_overrides = {
-                "s3.endpoint": os.getenv("S3_ENDPOINT", "http://minio:9000"),
+                "s3.endpoint": _s3_ep,
                 "s3.access-key-id": os.getenv(f"{tier}_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", ""),
                 "s3.secret-access-key": os.getenv(f"{tier}_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", ""),
                 "s3.path-style-access": "true",
-                "s3.signer.uri": lakekeeper_base,
             } if self._lakekeeper_endpoint else {}
 
             class _PatchedRestCatalog(RestCatalog):
                 def _response_to_table(self_, identifier_tuple, table_response):
                     merged = {**table_response.metadata.properties, **table_response.config, **s3_overrides, "uri": lakekeeper_base}
+                    # Strip remote-signer config — see WORKAROUND comment above.
+                    merged.pop("s3.signer", None)
+                    merged.pop("s3.signer.uri", None)
+                    merged.pop("s3.signer.endpoint", None)
                     return Table(
                         identifier=identifier_tuple,
                         metadata_location=table_response.metadata_location,
@@ -83,12 +107,16 @@ class TrinoStorage:
                         config=table_response.config,
                     )
 
+            from steve_cli.auth import get_token
+            stp_token = get_token(self._workspace_id)
+            token_kwargs = {"token": stp_token} if stp_token else {}
             try:
                 catalog = _PatchedRestCatalog(
                     "lakekeeper",
                     uri=lakekeeper_base,
                     warehouse=self._lakekeeper_warehouse,
                     **s3_overrides,
+                    **token_kwargs,
                 )
             except Exception as exc:
                 msg = str(exc)
@@ -208,7 +236,8 @@ class TrinoStorage:
         import datetime
 
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
-        lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
+        _lk = self._lakekeeper_endpoint or "http://lakekeeper:8181"
+        lakekeeper_base = _lk.rstrip("/") + "/catalog"
         namespace_props = {"location": self._iceberg_location_prefix}
         created = False
         try:
@@ -234,11 +263,11 @@ class TrinoStorage:
             from pyiceberg.schema import Schema
             from pyiceberg.types import NestedField, StringType
             meta_schema = Schema(
-                NestedField(1, "branch", StringType(), required=True),
-                NestedField(2, "tier", StringType(), required=True),
-                NestedField(3, "schema_name", StringType(), required=True),
-                NestedField(4, "iceberg_location", StringType(), required=True),
-                NestedField(5, "created_at", StringType(), required=True),
+                NestedField(1, "branch", StringType(), required=False),
+                NestedField(2, "tier", StringType(), required=False),
+                NestedField(3, "schema_name", StringType(), required=False),
+                NestedField(4, "iceberg_location", StringType(), required=False),
+                NestedField(5, "created_at", StringType(), required=False),
             )
             meta_table_id = f"{self.schema}._meta"
             try:
@@ -248,7 +277,7 @@ class TrinoStorage:
                     "tier": [self._tier],
                     "schema_name": [self.schema],
                     "iceberg_location": [self._iceberg_location_prefix],
-                    "created_at": [datetime.datetime.utcnow().isoformat()],
+                    "created_at": [datetime.datetime.now(datetime.timezone.utc).isoformat()],
                 }))
                 logger.info("Created _meta table in namespace %s", self.schema)
             except Exception as exc:
