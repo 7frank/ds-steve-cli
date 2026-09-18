@@ -9,6 +9,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from .branch import get_branch_prefix
+from steve_cli.auth import get_s3_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ class S3Storage:
         self.endpoint, self.bucket, access_key, secret_key, required_vars = (
             self._load_config(self.tier, workspace)
         )
+
+        cred_endpoint = get_s3_endpoint()
+        if cred_endpoint:
+            self.endpoint = cred_endpoint
+            self._endpoint_source = "credentials"
+        else:
+            self._endpoint_source = "env" if os.getenv("S3_ENDPOINT") else "default"
 
         missing = [v for v in required_vars if not os.getenv(v)]
         if missing:

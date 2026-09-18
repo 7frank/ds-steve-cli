@@ -988,6 +988,24 @@ def login(token: str | None, workspace_id: str | None, base_url: str | None, wor
         save_credentials(resolved_workspace, token, base_url=base_url, workspace_name=workspace_name, expires_at=expires_at)
         if base_url:
             click.echo(f"Platform: {base_url}")
+
+        s3_endpoint: str | None = None
+        if base_url:
+            try:
+                import urllib.request as _urlreq
+                config_url = f"https://auth-proxy.{base_url}/api/cli/config"
+                req = _urlreq.Request(config_url, headers={"Authorization": f"Bearer {token}"})
+                with _urlreq.urlopen(req, timeout=5) as _r:
+                    import json as _json
+                    cfg = _json.loads(_r.read().decode())
+                    s3_endpoint = cfg.get("s3Endpoint")
+            except Exception as _e:
+                click.secho(f"Could not fetch platform config (s3Endpoint will use .env fallback): {_e}", fg="yellow", err=True)
+
+        if s3_endpoint:
+            save_credentials(resolved_workspace, token, base_url=base_url, workspace_name=workspace_name, expires_at=expires_at, s3_endpoint=s3_endpoint)
+            click.echo(f"S3 endpoint: {s3_endpoint}")
+
         click.secho(f"Logged in. Credentials saved to ~/.steve/credentials.json", fg="green")
         return
 
@@ -1048,7 +1066,7 @@ def status(env_file: tuple, no_check: bool):
     def _row(label: str, value: str, value_color: str = "white") -> None:
         click.echo(f"  {click.style(label.ljust(14), fg='bright_black')}  {click.style(value, fg=value_color)}")
 
-    def _check(label: str, url: str, timeout: int = 2, token: str = "") -> None:
+    def _check(label: str, url: str, timeout: int = 2, token: str = "", suffix: str = "") -> None:
         if no_check:
             _row(label, "(skipped)", "bright_black")
             return
@@ -1057,12 +1075,12 @@ def status(env_file: tuple, no_check: bool):
             if token:
                 req.add_header("Authorization", f"Bearer {token}")
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                _row(label, f"✓ reachable  ({url})", "green")
+                _row(label, f"✓ reachable  ({url}){suffix}", "green")
                 return r.read()
         except urllib.error.HTTPError:
-            _row(label, f"✓ reachable  ({url})", "green")
+            _row(label, f"✓ reachable  ({url}){suffix}", "green")
         except Exception as e:
-            _row(label, f"✗ unreachable  ({url}): {e}", "red")
+            _row(label, f"✗ unreachable  ({url}){suffix}: {e}", "red")
 
     click.echo(f"\n{click.style('●', fg='green')} Steve CLI {click.style('v' + version, fg='cyan', bold=True)}")
 
@@ -1184,8 +1202,18 @@ def status(env_file: tuple, no_check: bool):
     lakekeeper = os.getenv("LAKEKEEPER_ENDPOINT", "")
 
     _section("Connectivity")
-    s3_endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
-    _check("S3 endpoint", s3_endpoint)
+    _cred_s3 = entry.get("s3_endpoint", "")
+    _env_s3 = os.getenv("S3_ENDPOINT", "")
+    if _cred_s3:
+        s3_endpoint = _cred_s3
+        s3_source = "credentials"
+    elif _env_s3:
+        s3_endpoint = _env_s3
+        s3_source = "S3_ENDPOINT env"
+    else:
+        s3_endpoint = "http://localhost:9000"
+        s3_source = "default"
+    _check("S3 endpoint", s3_endpoint, suffix=f"  (from {s3_source})")
     if trino_endpoint:
         if no_check:
             _row("Trino", "(skipped)", "bright_black")

@@ -22,6 +22,7 @@ def save_credentials(
     base_url: Optional[str] = None,
     workspace_name: Optional[str] = None,
     expires_at: Optional[str] = None,
+    s3_endpoint: Optional[str] = None,
 ) -> None:
     _CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
     creds = load_credentials()
@@ -33,6 +34,8 @@ def save_credentials(
         entry["workspace_name"] = workspace_name
     if expires_at:
         entry["expires_at"] = expires_at
+    if s3_endpoint:
+        entry["s3_endpoint"] = s3_endpoint
     workspaces[workspace_id] = entry
     creds["workspaces"] = workspaces
     _CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2))
@@ -64,6 +67,10 @@ def _get_workspace_entry(workspace_id: Optional[str]) -> dict:
 
 def get_token(workspace_id: Optional[str] = None) -> Optional[str]:
     return _get_workspace_entry(workspace_id).get("token")
+
+
+def get_s3_endpoint(workspace_id: Optional[str] = None) -> Optional[str]:
+    return _get_workspace_entry(workspace_id).get("s3_endpoint")
 
 
 def get_service_url(service: str, workspace_id: Optional[str] = None) -> Optional[str]:
