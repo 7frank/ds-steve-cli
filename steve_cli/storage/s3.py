@@ -8,12 +8,15 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError, EndpointConnectionError
 
+from .branch import get_branch_prefix
+
 logger = logging.getLogger(__name__)
 
 
 class S3Storage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
         self.tier = tier.lower()
+        self._branch = get_branch_prefix()
         self.endpoint, self.bucket, access_key, secret_key, required_vars = (
             self._load_config(self.tier, workspace)
         )
@@ -66,11 +69,11 @@ class S3Storage:
             ]
         return endpoint, bucket, access_key, secret_key, required
 
-    @staticmethod
-    def _key(path: str) -> str:
+    def _key(self, path: str) -> str:
         if not path:
-            return ""
-        return str(PurePosixPath(path).as_posix().lstrip("/"))
+            return f"_store/{self._branch}/"
+        clean = str(PurePosixPath(path).as_posix().lstrip("/"))
+        return f"_store/{self._branch}/{clean}"
 
     def _object_location(self, path: str) -> str:
         return f"{self.endpoint}/{self.bucket}/{self._key(path)}"

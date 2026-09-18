@@ -10,19 +10,21 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
+from .branch import get_branch_prefix
+
 logger = logging.getLogger(__name__)
 
 
-def _derive_schema(tier: str, workspace: str | None) -> str | None:
-    if workspace:
-        prefix = workspace.lower().replace("-", "_")
-        return f"ws_{prefix}_{tier.lower()}"
-    return None
+def _derive_schema(tier: str, workspace: str | None, branch: str) -> str:
+    base = f"{workspace.lower().replace('-', '_')}_{tier.lower()}" if workspace else tier.lower()
+    return f"{base}__{branch}"
 
 
 class TrinoStorage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
         from steve_cli.auth import get_service_url
+        self._branch = get_branch_prefix()
+        self._tier = tier.lower()
         self._workspace_id = os.getenv("WORKSPACE_ID")
         trino_endpoint = get_service_url("trino", self._workspace_id)
         if not trino_endpoint:
@@ -38,14 +40,13 @@ class TrinoStorage:
             raise OSError(f"Trino endpoint not found:\n{detail}")
         self.catalog = os.getenv("TRINO_CATALOG", "minio")
         resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
-        self.schema = _derive_schema(tier, resolved_workspace) or os.environ.get("TRINO_SCHEMA", "")
-        if not self.schema:
-            raise OSError("TRINO_SCHEMA is not set and no WORKSPACE_NAME or workspace was provided")
+        self.schema = os.environ.get("TRINO_SCHEMA") or _derive_schema(tier, resolved_workspace, self._branch)
         self.user = os.getenv("TRINO_USER", "admin")
         self._base = trino_endpoint.rstrip("/")
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT")
         default_warehouse = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_warehouse)
+        self._iceberg_location_prefix = f"_iceberg/{self._branch}"
         self.__iceberg_catalog = None
 
     @property
@@ -60,7 +61,7 @@ class TrinoStorage:
             # locally). We subclass RestCatalog to inject our local signer URI after pyiceberg
             # merges table config (which overwrites s3.signer.uri with the internal hostname).
             # Remove once Increment 5 (STS credential vending) is wired.
-            tier = self.schema.rsplit("_", 1)[-1].upper()
+            tier = self._tier.upper()
             lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
             s3_overrides = {
                 "s3.endpoint": os.getenv("S3_ENDPOINT", "http://minio:9000"),
@@ -204,11 +205,16 @@ class TrinoStorage:
         Path(local_path).write_bytes(self.get_bytes(path))
 
     def _ensure_namespace(self) -> None:
+        import datetime
+
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
         lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
+        namespace_props = {"location": self._iceberg_location_prefix}
+        created = False
         try:
-            self._iceberg_catalog.create_namespace(self.schema)
+            self._iceberg_catalog.create_namespace(self.schema, properties=namespace_props)
             logger.info("Created namespace %s", self.schema)
+            created = True
         except NamespaceAlreadyExistsError:
             pass
         except Exception as exc:
@@ -223,6 +229,30 @@ class TrinoStorage:
                 f"TrinoStorage: namespace '{self.schema}' creation failed at Lakekeeper "
                 f"[{lakekeeper_base}] — {type(exc).__name__}: {exc}"
             ) from exc
+
+        if created:
+            from pyiceberg.schema import Schema
+            from pyiceberg.types import NestedField, StringType
+            meta_schema = Schema(
+                NestedField(1, "branch", StringType(), required=True),
+                NestedField(2, "tier", StringType(), required=True),
+                NestedField(3, "schema_name", StringType(), required=True),
+                NestedField(4, "iceberg_location", StringType(), required=True),
+                NestedField(5, "created_at", StringType(), required=True),
+            )
+            meta_table_id = f"{self.schema}._meta"
+            try:
+                meta_table = self._iceberg_catalog.create_table(meta_table_id, schema=meta_schema)
+                meta_table.append(pa.table({
+                    "branch": [self._branch],
+                    "tier": [self._tier],
+                    "schema_name": [self.schema],
+                    "iceberg_location": [self._iceberg_location_prefix],
+                    "created_at": [datetime.datetime.utcnow().isoformat()],
+                }))
+                logger.info("Created _meta table in namespace %s", self.schema)
+            except Exception as exc:
+                logger.warning("Could not create _meta table in %s: %s", self.schema, exc)
 
     def put_bytes(self, data: bytes, path: str) -> None:
         from pyiceberg.exceptions import NoSuchTableError

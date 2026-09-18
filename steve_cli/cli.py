@@ -963,9 +963,10 @@ def policies_apply(file: Path | None):
 @click.option("--workspace", "workspace_id", default=None, help="Workspace ID (defaults to WORKSPACE_ID from .env)")
 @click.option("--url", "base_url", default=None, help="Platform root host, e.g. jds-dev.internal.jambit.io")
 @click.option("--workspace-name", "workspace_name_opt", default=None, help="Workspace name")
+@click.option("--expires", "expires_at", default=None, help="Token expiry date/time (e.g. 2026-12-31 or ISO 8601). Informational only.")
 @click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
               help='Path to .env file(s). Defaults to .env and .workspaces.env')
-def login(token: str | None, workspace_id: str | None, base_url: str | None, workspace_name_opt: str | None, env_file: tuple):
+def login(token: str | None, workspace_id: str | None, base_url: str | None, workspace_name_opt: str | None, expires_at: str | None, env_file: tuple):
     """Print CLI access URLs or save a service principal token."""
     cwd = Path.cwd()
     env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
@@ -984,7 +985,7 @@ def login(token: str | None, workspace_id: str | None, base_url: str | None, wor
             click.secho("Could not resolve workspace ID. Set WORKSPACE_ID in .env or pass --workspace.", fg="red", err=True)
             raise SystemExit(1)
         click.echo(f"\nYou are about to log in to workspace {click.style(workspace_name, fg='cyan', bold=True)} ({resolved_workspace})")
-        save_credentials(resolved_workspace, token, base_url=base_url, workspace_name=workspace_name)
+        save_credentials(resolved_workspace, token, base_url=base_url, workspace_name=workspace_name, expires_at=expires_at)
         if base_url:
             click.echo(f"Platform: {base_url}")
         click.secho(f"Logged in. Credentials saved to ~/.steve/credentials.json", fg="green")
@@ -1020,6 +1021,184 @@ def logout(workspace_id: str | None, env_file: tuple):
         click.secho(f"Credentials removed for workspace {resolved_workspace}.", fg="green")
     else:
         click.secho("All credentials removed.", fg="green")
+
+
+@main.command("status")
+@click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
+              help='Path to .env file(s). Defaults to .env and .workspaces.env')
+@click.option('--no-check', is_flag=True, default=False, help='Skip connectivity checks.')
+def status(env_file: tuple, no_check: bool):
+    """Show current steve-cli environment, storage paths, and connectivity."""
+    import importlib.metadata
+    import urllib.request
+
+    cwd = Path.cwd()
+    env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
+    for ef in env_files:
+        load_dotenv(ef)
+
+    try:
+        version = importlib.metadata.version("steve-cli")
+    except Exception:
+        version = "unknown"
+
+    def _section(title: str) -> None:
+        click.echo(f"\n{click.style(f'━━ {title} ', fg='bright_black')}{'━' * max(0, 48 - len(title))}")
+
+    def _row(label: str, value: str, value_color: str = "white") -> None:
+        click.echo(f"  {click.style(label.ljust(14), fg='bright_black')}  {click.style(value, fg=value_color)}")
+
+    def _check(label: str, url: str, timeout: int = 2) -> None:
+        if no_check:
+            _row(label, "(skipped)", "bright_black")
+            return
+        try:
+            urllib.request.urlopen(url, timeout=timeout)
+            _row(label, f"✓ reachable  ({url})", "green")
+        except Exception:
+            _row(label, f"✗ unreachable  ({url})", "red")
+
+    click.echo(f"\n{click.style('●', fg='green')} Steve CLI {click.style('v' + version, fg='cyan', bold=True)}")
+
+    from steve_cli.storage.branch import get_branch_prefix
+    import subprocess as _sp
+
+    branch = get_branch_prefix()
+    steve_branch_env = os.getenv("STEVE_BRANCH", "").strip()
+    gh_head = os.getenv("GITHUB_HEAD_REF", "").strip() or os.getenv("GITHUB_REF_NAME", "").strip()
+    if steve_branch_env:
+        branch_source = f"STEVE_BRANCH={steve_branch_env!r}"
+    elif gh_head:
+        branch_source = f"GITHUB env ({gh_head})"
+    else:
+        try:
+            r = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=3)
+            branch_source = "git" if r.returncode == 0 and r.stdout.strip() else "fallback"
+        except Exception:
+            branch_source = "fallback"
+
+    workspace_id = os.getenv("WORKSPACE_ID", "")
+    workspace_name = os.getenv("WORKSPACE_NAME", "")
+    session = os.getenv("SESSION_NAME", "") or socket.gethostname()
+
+    from steve_cli.auth import _get_workspace_entry, get_service_url
+    import datetime as _dt
+    entry = _get_workspace_entry(workspace_id or None)
+    token = entry.get("token", "")
+    expires_at = entry.get("expires_at", "")
+    if token:
+        expiry_warn = False
+        expiry_str = ", expires never" if not expires_at else ""
+        if expires_at:
+            try:
+                exp = _dt.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                now = _dt.datetime.now(_dt.timezone.utc) if exp.tzinfo else _dt.datetime.now()
+                delta = exp - now
+                total_seconds = int(delta.total_seconds())
+                if total_seconds < 0:
+                    s = abs(total_seconds)
+                    if s < 3600:
+                        ago = f"{s // 60}m ago"
+                    elif s < 86400:
+                        ago = f"{s // 3600}h ago"
+                    else:
+                        ago = f"{s // 86400}d ago"
+                    expiry_str = f", expired {ago}"
+                    expiry_warn = True
+                elif total_seconds < 3600:
+                    expiry_str = f", expires in {total_seconds // 60}m ⚠"
+                    expiry_warn = True
+                elif total_seconds < 86400:
+                    expiry_str = f", expires in {total_seconds // 3600}h ⚠"
+                    expiry_warn = True
+                elif delta.days <= 7:
+                    expiry_str = f", expires in {delta.days}d ⚠"
+                    expiry_warn = True
+                else:
+                    expiry_str = f", expires {exp.strftime('%Y-%m-%d %H:%M')}"
+            except Exception:
+                expiry_str = f", expires {expires_at}"
+        token_display = f"✓ logged in  (stp_***{token[-4:]}{expiry_str})"
+        token_color = "yellow" if expiry_warn else "green"
+    else:
+        token_display = "✗ not logged in — run: steve login"
+        token_color = "yellow"
+
+    _section("Identity")
+    _row("Branch", f"{branch}  ({branch_source})", "cyan")
+    _row("Workspace ID", workspace_id or "(not set)", "white" if workspace_id else "yellow")
+    _row("Workspace", workspace_name or "(not set)", "white" if workspace_name else "yellow")
+    _row("Session", session, "white")
+    _row("Auth", token_display, token_color)
+
+    tiers = ["bronze", "silver", "gold"]
+    s3_rows = []
+    for tier in tiers:
+        tier_up = tier.upper()
+        bucket = os.getenv(f"{tier_up}_BUCKET", "")
+        if bucket:
+            s3_rows.append((f"S3 {tier}", f"s3://{bucket}/_store/{branch}/"))
+    for ws in _detect_workspaces():
+        for tier in tiers:
+            bucket = os.getenv(f"{ws}_BUCKET_{tier.upper()}", "")
+            if bucket:
+                s3_rows.append((f"S3 {ws.lower()}/{tier}", f"s3://{bucket}/_store/{branch}/"))
+
+    _section("Storage Paths")
+    if s3_rows:
+        for label, path in s3_rows:
+            _row(label, path, "cyan")
+    else:
+        _row("S3", "(no bucket env vars found)", "yellow")
+    _row("Iceberg base", f"_iceberg/{branch}/", "cyan")
+
+    trino_endpoint = get_service_url("trino", workspace_id or None)
+    resolved_workspace = workspace_name or workspace_id or ""
+    trino_catalog = os.getenv("TRINO_CATALOG", "minio")
+    trino_schema_explicit = os.getenv("TRINO_SCHEMA", "")
+
+    _section("Trino")
+    if trino_endpoint:
+        _row("Endpoint", trino_endpoint, "cyan")
+    else:
+        _row("Endpoint", "✗ not configured (login required)", "yellow")
+    _row("Catalog", trino_catalog, "white")
+    for tier in tiers:
+        if trino_schema_explicit:
+            schema = trino_schema_explicit
+        elif resolved_workspace:
+            ws_clean = resolved_workspace.lower().replace("-", "_")
+            schema = f"{ws_clean}_{tier}__{branch}"
+        else:
+            schema = f"(workspace not set — set WORKSPACE_NAME)"
+        _row(f"Schema {tier}", schema, "cyan" if resolved_workspace or trino_schema_explicit else "yellow")
+        if trino_schema_explicit:
+            break
+
+    lakekeeper = os.getenv("LAKEKEEPER_ENDPOINT", "")
+
+    _section("Connectivity")
+    s3_endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
+    _check("S3 endpoint", s3_endpoint)
+    if trino_endpoint:
+        _check("Trino", f"{trino_endpoint}/v1/info")
+    else:
+        _row("Trino", "✗ not configured", "yellow")
+    if lakekeeper:
+        _check("Lakekeeper", f"{lakekeeper}/catalog/v1/config")
+    else:
+        _row("Lakekeeper", "(not configured — LAKEKEEPER_ENDPOINT not set)", "bright_black")
+
+    _section("Environment")
+    for ef in env_files:
+        state = "✓ found" if ef.exists() else "✗ missing"
+        color = "green" if ef.exists() else "bright_black"
+        _row(ef.name, state, color)
+    _row("STEVE_BRANCH", repr(steve_branch_env) if steve_branch_env else "(not set — auto-detected)", "white" if steve_branch_env else "bright_black")
+    detected_ws = _detect_workspaces()
+    if detected_ws:
+        _row("Upstream ws", ", ".join(detected_ws), "white")
+    click.echo()
 
 
 @main.command("upgrade")

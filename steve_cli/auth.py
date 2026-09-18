@@ -21,6 +21,7 @@ def save_credentials(
     token: str,
     base_url: Optional[str] = None,
     workspace_name: Optional[str] = None,
+    expires_at: Optional[str] = None,
 ) -> None:
     _CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
     creds = load_credentials()
@@ -30,6 +31,8 @@ def save_credentials(
         entry["base_url"] = base_url.rstrip("/")
     if workspace_name:
         entry["workspace_name"] = workspace_name
+    if expires_at:
+        entry["expires_at"] = expires_at
     workspaces[workspace_id] = entry
     creds["workspaces"] = workspaces
     _CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2))

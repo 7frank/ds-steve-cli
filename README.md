@@ -2,6 +2,8 @@
 
 A CLI tool for the data platform. Commands are organized by concern: general workspace automation, data lakehouse operations, semantic knowledge graphs, and governance.
 
+> **Upgrading from 0.x?** See [CHANGELOG.md](./CHANGELOG.md) — v1.0.0 introduces branch-isolated storage with breaking path changes that require a one-time data migration.
+
 ## Installation
 
 ```bash
