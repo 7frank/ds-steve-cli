@@ -1153,7 +1153,28 @@ def status(env_file: tuple, no_check: bool):
     _row("Workspace ID", workspace_id or "(not set)", "white" if workspace_id else "yellow")
     _row("Workspace", workspace_name or "(not set)", "white" if workspace_name else "yellow")
     _row("Session", session, "white")
-    _row("Auth", token_display, token_color)
+    if token and not no_check:
+        _base_url = entry.get("base_url", "")
+        if _base_url:
+            try:
+                _req = urllib.request.Request(
+                    f"https://auth-proxy.{_base_url}/api/cli/config",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with urllib.request.urlopen(_req, timeout=4) as _r:
+                    _r.read()
+                _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
+            except urllib.error.HTTPError as _e:
+                if _e.code == 401:
+                    _row("Auth", f"✗ token invalid/revoked  (stp_***{token[-4:]}{expiry_str})", "red")
+                else:
+                    _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
+            except Exception as _e:
+                _row("Auth", f"{token_display}  (validation failed: {_e})", token_color)
+        else:
+            _row("Auth", token_display, token_color)
+    else:
+        _row("Auth", token_display, token_color)
 
     tiers = ["bronze", "silver", "gold"]
     s3_rows = []
