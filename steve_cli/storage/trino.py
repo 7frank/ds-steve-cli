@@ -38,14 +38,14 @@ class TrinoStorage:
             ]
             detail = "\n".join(f"  {mark} {desc}" for mark, desc in checks)
             raise OSError(f"Trino endpoint not found:\n{detail}")
-        self.catalog = os.getenv("TRINO_CATALOG", "minio")
         resolved_workspace = workspace or os.getenv("WORKSPACE_NAME")
+        default_catalog = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
+        self.catalog = os.getenv("TRINO_CATALOG", default_catalog)
         self.schema = os.environ.get("TRINO_SCHEMA") or _derive_schema(tier, resolved_workspace, self._branch)
         self.user = os.getenv("TRINO_USER", "admin")
         self._base = trino_endpoint.rstrip("/")
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT") or get_service_url("lakekeeper", self._workspace_id)
-        default_warehouse = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
-        self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_warehouse)
+        self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
         _iceberg_bucket = os.getenv(f"{tier.upper()}_BUCKET", "")
         if _iceberg_bucket:
             self._iceberg_location_prefix = f"s3://{_iceberg_bucket}/_iceberg/{self._branch}"
@@ -201,7 +201,7 @@ class TrinoStorage:
         return path.strip("/").replace("/", "_").replace(".", "_")
 
     def list(self, prefix: str = "") -> list[str]:
-        rows = self._execute(f"SHOW TABLES FROM {self.catalog}.{self.schema}")
+        rows = self._execute(f'SHOW TABLES FROM "{self.catalog}".{self.schema}')
         tables = [r["Table"] for r in rows]
         if prefix:
             clean = prefix.strip("/")
@@ -212,7 +212,7 @@ class TrinoStorage:
         return self.list()
 
     def get_bytes(self, path: str) -> bytes:
-        table_ref = f"{self.catalog}.{self.schema}.{self._table_name(path)}"
+        table_ref = f'"{self.catalog}".{self.schema}.{self._table_name(path)}'
         try:
             rows = self._execute(f"SELECT * FROM {table_ref}")
         except OSError:
@@ -282,6 +282,15 @@ class TrinoStorage:
                 logger.info("Created _meta table in namespace %s", self.schema)
             except Exception as exc:
                 logger.warning("Could not create _meta table in %s: %s", self.schema, exc)
+
+        try:
+            self._execute(
+                f'CREATE SCHEMA IF NOT EXISTS "{self.catalog}".{self.schema} '
+                f"WITH (location = '{self._iceberg_location_prefix}')"
+            )
+            logger.debug("Ensured Trino schema %s.%s", self.catalog, self.schema)
+        except Exception as exc:
+            logger.warning("Could not ensure Trino schema %s.%s: %s", self.catalog, self.schema, exc)
 
     def put_bytes(self, data: bytes, path: str) -> None:
         from pyiceberg.exceptions import NoSuchTableError
