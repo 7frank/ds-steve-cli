@@ -42,7 +42,7 @@ class TrinoStorage:
         default_catalog = f"{resolved_workspace}-{tier}" if resolved_workspace else "minio"
         self.catalog = os.getenv("TRINO_CATALOG", default_catalog)
         self.schema = os.environ.get("TRINO_SCHEMA") or _derive_schema(tier, resolved_workspace, self._branch)
-        self.user = os.getenv("TRINO_USER", "admin")
+        self.user = os.getenv("TRINO_USER") or resolved_workspace or "admin"
         self._base = trino_endpoint.rstrip("/")
         self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT") or get_service_url("lakekeeper", self._workspace_id)
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
