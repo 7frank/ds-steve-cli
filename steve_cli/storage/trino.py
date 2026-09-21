@@ -86,8 +86,7 @@ class TrinoStorage:
             # contain a resolvable hostname, then remove the merged.pop() calls below and
             # restore `s3.signer.uri: lakekeeper_base` in s3_overrides.
             tier = self._tier.upper()
-            _lk = self._lakekeeper_endpoint or "http://lakekeeper:8181"
-            lakekeeper_base = _lk.rstrip("/") + "/catalog"
+            lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
             from steve_cli.auth import get_s3_endpoint as _get_s3_ep
             _s3_ep = _get_s3_ep(self._workspace_id) or os.getenv("S3_ENDPOINT", "http://minio:9000")
             s3_overrides = {
@@ -277,8 +276,7 @@ class TrinoStorage:
         import datetime
 
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
-        _lk = self._lakekeeper_endpoint or "http://lakekeeper:8181"
-        lakekeeper_base = _lk.rstrip("/") + "/catalog"
+        lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
         namespace_props = {"location": self._iceberg_location_prefix}
         created = False
         try:
