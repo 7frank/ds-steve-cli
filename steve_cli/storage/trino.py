@@ -50,7 +50,13 @@ class TrinoStorage:
         if _iceberg_bucket:
             self._iceberg_location_prefix = f"s3://{_iceberg_bucket}/_iceberg/{self._branch}"
         else:
-            self._iceberg_location_prefix = f"_iceberg/{self._branch}"
+            raise OSError(
+                f"TrinoStorage: missing bucket configuration for tier '{tier}' — "
+                f"{tier.upper()}_BUCKET is not set.\n"
+                f"  Required env vars: {tier.upper()}_BUCKET, {tier.upper()}_ACCESS_KEY, {tier.upper()}_SECRET_KEY\n"
+                f"  This workspace may only have read access to the '{tier}' tier. "
+                f"Write access requires provisioning credentials (run 'uv run steve setup env' or check workspace provisioning)."
+            )
         self.__iceberg_catalog = None
 
     @property
