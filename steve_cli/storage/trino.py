@@ -212,7 +212,8 @@ class TrinoStorage:
         return self.list()
 
     def get_bytes(self, path: str) -> bytes:
-        table_ref = f'"{self.catalog}".{self.schema}.{self._table_name(path)}'
+        table_name = self._table_name(path)
+        table_ref = f'"{self.catalog}".{self.schema}.{table_name}'
         try:
             rows = self._execute(f"SELECT * FROM {table_ref}")
         except OSError:
@@ -222,7 +223,39 @@ class TrinoStorage:
                 f"TrinoStorage: read from '{table_ref}' failed — {type(exc).__name__}: {exc}"
             ) from exc
         if not rows:
-            return b""
+            list_err: str | None = None
+            table_names: list[str] | None = None
+            try:
+                existing = self._execute(f'SHOW TABLES FROM "{self.catalog}".{self.schema}')
+                table_names = [r.get("Table", "") for r in existing]
+            except Exception as list_exc:
+                list_err = str(list_exc)
+
+            if table_names is not None and table_name in table_names:
+                raise OSError(
+                    f"TrinoStorage: table '{table_ref}' exists in Trino but returned 0 rows — "
+                    f"data may not have been written yet, or the last write produced an empty result."
+                )
+            elif list_err is not None:
+                raise OSError(
+                    f"TrinoStorage: table '{table_name}' not found in catalog='{self.catalog}' schema='{self.schema}'.\n"
+                    f"  Looked in: {table_ref}\n"
+                    f"  Could not list tables in that schema: {list_err}\n"
+                    f"  Hint: if data was written with get_storage() (S3/Parquet), read it back with get_storage(), not get_tables()."
+                )
+            elif table_names == []:
+                raise OSError(
+                    f"TrinoStorage: table '{table_name}' not found — schema '{self.catalog}'.'{self.schema}' exists but contains no tables.\n"
+                    f"  Looked in: {table_ref}\n"
+                    f"  Hint: if data was written with get_storage() (S3/Parquet), read it back with get_storage(), not get_tables()."
+                )
+            else:
+                raise OSError(
+                    f"TrinoStorage: table '{table_name}' not found in catalog='{self.catalog}' schema='{self.schema}'.\n"
+                    f"  Looked in: {table_ref}\n"
+                    f"  Tables found in that schema: {', '.join(table_names or [])}\n"
+                    f"  Hint: if data was written with get_storage() (S3/Parquet), read it back with get_storage(), not get_tables()."
+                )
         arrow_table = pa.Table.from_pylist(rows)
         buf = io.BytesIO()
         pq.write_table(arrow_table, buf)

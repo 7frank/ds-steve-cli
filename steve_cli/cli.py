@@ -993,7 +993,7 @@ def login(token: str | None, workspace_id: str | None, base_url: str | None, wor
         if base_url:
             try:
                 import urllib.request as _urlreq
-                config_url = f"https://auth-proxy.{base_url}/api/cli/config"
+                config_url = f"https://datameshx.{base_url}/api/v1/cli/config"
                 req = _urlreq.Request(config_url, headers={"Authorization": f"Bearer {token}"})
                 with _urlreq.urlopen(req, timeout=5) as _r:
                     import json as _json
@@ -1158,7 +1158,7 @@ def status(env_file: tuple, no_check: bool):
         if _base_url:
             try:
                 _req = urllib.request.Request(
-                    f"https://auth-proxy.{_base_url}/api/cli/config",
+                    f"https://datameshx.{_base_url}/api/v1/cli/config",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 with urllib.request.urlopen(_req, timeout=4) as _r:
