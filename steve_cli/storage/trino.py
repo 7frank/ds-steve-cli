@@ -44,7 +44,9 @@ class TrinoStorage:
         self.schema = os.environ.get("TRINO_SCHEMA") or _derive_schema(tier, resolved_workspace, self._branch)
         self.user = os.getenv("TRINO_USER") or resolved_workspace or "admin"
         self._base = trino_endpoint.rstrip("/")
-        self._lakekeeper_endpoint = os.getenv("LAKEKEEPER_ENDPOINT") or get_service_url("lakekeeper", self._workspace_id)
+        _lk_env = os.getenv("LAKEKEEPER_ENDPOINT")
+        _lk_svc = get_service_url("lakekeeper", self._workspace_id)
+        self._lakekeeper_endpoint = _lk_env.rstrip("/") if _lk_env else (_lk_svc.rstrip("/") + "/catalog" if _lk_svc else None)
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
         _iceberg_bucket = os.getenv(f"{tier.upper()}_BUCKET", "")
         if _iceberg_bucket:
