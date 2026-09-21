@@ -214,6 +214,8 @@ class TrinoStorage:
     def get_bytes(self, path: str) -> bytes:
         table_name = self._table_name(path)
         table_ref = f'"{self.catalog}".{self.schema}.{table_name}'
+        if os.getenv("STEVE_TRINO_TRACE") == "1":
+            logger.warning("[trino] get_bytes: %s  (warehouse=%s)", table_ref, self._lakekeeper_warehouse)
         try:
             rows = self._execute(f"SELECT * FROM {table_ref}")
         except OSError:
@@ -406,6 +408,18 @@ class TrinoStorage:
                 ) from exc
             _append(iceberg_table, arrow_table, table_id)
 
+        if os.getenv("STEVE_TRINO_TRACE") == "1":
+            snapshot = None
+            try:
+                snapshot = catalog.load_table(f"{self.schema}.{self._table_name(path)}").current_snapshot()
+            except Exception:
+                pass
+            logger.warning(
+                "[trino] put_bytes: wrote %d rows → %s.%s  (warehouse=%s, location=%s%s)",
+                len(arrow_table), self.catalog, table_id,
+                self._lakekeeper_warehouse, self._iceberg_location_prefix,
+                f", snapshot={snapshot.snapshot_id}" if snapshot else "",
+            )
         logger.info("Written %d rows to %s", len(arrow_table), table_id)
 
     def put_file(self, local_path: str, path: str) -> None:
