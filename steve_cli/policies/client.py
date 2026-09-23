@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 _POLICY_VERSION = "v0"
 
@@ -162,6 +165,13 @@ class PolicyClient:
         workspace = config["workspace"]
         pdp_cfg = config["pdp"]
         rules = config.get("rules", [])
+
+        invalid_users = [r["user"] for r in rules if not _EMAIL_RE.match(r.get("user", ""))]
+        if invalid_users:
+            raise ValueError(
+                f"Invalid user(s) in rules — expected email addresses, got: {invalid_users}. "
+                f"Use group-based access for wildcard permissions instead."
+            )
 
         from steve_cli.storage.branch import get_branch_prefix
         sanitized = get_branch_prefix()
