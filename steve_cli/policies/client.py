@@ -20,13 +20,16 @@ def _expand_schema(schema: str, sanitized_branch: str) -> str:
     return f"{schema}__{sanitized_branch}"
 
 
-def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str) -> list[dict[str, Any]]:
+def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str, workspace: str = "") -> list[dict[str, Any]]:
     expanded = []
     for rule in rules:
         rule = deepcopy(rule)
         for entry in rule.get("tables", []):
             if "schema" in entry:
                 entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
+                if workspace and "catalogs" not in entry:
+                    tier = entry["schema"].split("__")[0].rsplit("_", 1)[-1]
+                    entry["catalogs"] = [f"{workspace}-{tier}"]
         for entry in rule.get("columns", []):
             if "schema" in entry:
                 entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
@@ -176,7 +179,7 @@ class PolicyClient:
         from steve_cli.storage.branch import get_branch_prefix
         sanitized = get_branch_prefix()
         branch = sanitized
-        rules = _expand_rules(rules, sanitized)
+        rules = _expand_rules(rules, sanitized, workspace)
 
         pdp = self.register_pdp(
             name=pdp_cfg["name"],
