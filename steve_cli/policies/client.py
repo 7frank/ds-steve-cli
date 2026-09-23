@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -55,7 +56,14 @@ class PolicyClient:
         if "error" in data:
             raise RuntimeError(f"tRPC error on {path}: {data['error']}")
         result = data.get("result", {})
-        return result.get("data", {}).get("json", result.get("data", result))
+        if isinstance(result, list):
+            return result
+        data_inner = result.get("data", result)
+        if isinstance(data_inner, list):
+            return data_inner
+        if isinstance(data_inner, dict):
+            return data_inner.get("json", data_inner)
+        return data_inner
 
     def _trpc(self, method: str, path: str, payload: dict | None = None) -> dict:
         try:
@@ -65,6 +73,21 @@ class PolicyClient:
                 f"Cannot reach Policy Control Plane at {self.endpoint} — "
                 f"run `steve login` to configure credentials"
             ) from e
+
+    def list_pdps(self) -> list[dict]:
+        return self._trpc("query", "pdp.list") or []
+
+    def list_workspaces(self) -> list[str]:
+        return self._trpc("query", "workspace.list") or []
+
+    def list_workspace_pdps(self, workspace: str) -> list[dict]:
+        return self._trpc("query", "workspace.listPdps", {"workspace": workspace}) or []
+
+    def delete_pdp(self, pdp_id: str) -> dict:
+        return self._trpc("mutation", "pdp.delete", {"id": pdp_id})
+
+    def delete_pdp_policy(self, policy_id: str) -> dict:
+        return self._trpc("mutation", "pdp.policy.delete", {"id": policy_id})
 
     def register_pdp(self, name: str, endpoint: str, pdp_type: str = "opa", is_default: bool = True) -> dict:
         return self._trpc("mutation", "pdp.register", {
@@ -89,7 +112,47 @@ class PolicyClient:
             ],
         })
 
-    def apply_from_file(self, policies_file: Path | None = None) -> tuple[str, str]:
+    def _validate_against_trino(self, rules: list[dict[str, Any]], sanitized_branch: str) -> list[str]:
+        workspace_id = os.environ.get("WORKSPACE_ID")
+        workspace_name = os.environ.get("WORKSPACE_NAME", "")
+
+        seen: dict[str, list[str]] = {}
+        for rule in rules:
+            for entry in list(rule.get("tables", [])) + list(rule.get("columns", [])):
+                schema = entry.get("schema", "")
+                table = entry.get("table", "")
+                if schema and table:
+                    seen.setdefault(schema, [])
+                    if table not in seen[schema]:
+                        seen[schema].append(table)
+
+        results: list[str] = []
+        for schema, tables in seen.items():
+            tier = schema.split("__")[0].rsplit("_", 1)[-1] if "__" in schema else "bronze"
+            ws_clean = workspace_name.lower().replace("-", "_") if workspace_name else ""
+            catalog = f"{workspace_name}-{tier}" if workspace_name else f"minio-{tier}"
+
+            try:
+                from steve_cli.storage.trino import TrinoStorage
+                storage = TrinoStorage(tier=tier, workspace=workspace_name or None)
+                existing = storage._execute(f'SHOW TABLES FROM "{storage.catalog}".{schema}')
+                existing_names = {r.get("Table", "") for r in existing}
+                catalog = storage.catalog
+            except Exception as exc:
+                results.append(f"⚠ cannot reach Trino to validate schema '{schema}': {exc}")
+                continue
+
+            for table in tables:
+                if table in existing_names:
+                    results.append(f"✓ {catalog}.{schema}.{table}")
+                else:
+                    results.append(
+                        f"⚠ table '{table}' not found in '{catalog}.{schema}'"
+                        + (f" (found: {sorted(existing_names)})" if existing_names else " (schema empty or not found)")
+                    )
+        return results
+
+    def apply_from_file(self, policies_file: Path | None = None, validate: Literal[None, "warn", "error"] = None) -> tuple[str, str]:
         path = policies_file or Path.cwd() / "policies" / "access.yaml"
         if not path.exists():
             raise FileNotFoundError(f"Policies file not found: {path}")
@@ -117,5 +180,13 @@ class PolicyClient:
         if errors:
             reasons = "; ".join(e["reason"] for e in errors)
             raise RuntimeError(f"Failed to apply {len(errors)} policy fragment(s): {reasons}")
+
+        if validate is not None:
+            issues = self._validate_against_trino(rules, sanitized)
+            failed = [msg for msg in issues if msg.startswith("⚠")]
+            for msg in issues:
+                print(msg)
+            if failed and validate == "error":
+                raise RuntimeError(f"Validation failed: {len(failed)} issue(s) found")
 
         return branch, sanitized

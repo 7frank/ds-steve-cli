@@ -940,7 +940,9 @@ def policies():
 @policies.command("apply")
 @click.option('--file', '-f', type=click.Path(path_type=Path),
               help='Path to policies YAML file (default: ./policies/access.yaml)')
-def policies_apply(file: Path | None):
+@click.option('--validate', type=click.Choice(["warn", "error"]), default=None,
+              help='Validate schema/table references against Trino after applying (warn: print issues, error: fail if any found)')
+def policies_apply(file: Path | None, validate: str | None):
     """Apply access policies from a YAML file to the Policy Control Plane."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
@@ -948,12 +950,268 @@ def policies_apply(file: Path | None):
     from steve_cli.policies import PolicyClient
     policies_file = Path(file) if file else None
     try:
-        branch, sanitized = PolicyClient().apply_from_file(policies_file)
+        branch, sanitized = PolicyClient().apply_from_file(policies_file, validate=validate)
         click.secho(f"Branch: {branch} → schema suffix __{sanitized}", fg="cyan")
         click.secho("Policies applied successfully.", fg="green")
     except FileNotFoundError as e:
         click.secho(str(e), fg="red", err=True)
         sys.exit(1)
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+
+
+@policies.command("ls")
+def policies_ls():
+    """List all registered PDPs and their attached workspaces."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    from steve_cli.policies import PolicyClient
+    try:
+        pdps = PolicyClient().list_pdps()
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+    if not pdps:
+        click.echo("No PDPs registered.")
+        return
+    for pdp in pdps:
+        workspaces = [w.get("workspace", "") for w in pdp.get("workspaces", [])]
+        policies_count = len(pdp.get("policies", []))
+        click.echo(
+            f"  {click.style(pdp['name'], fg='blue', bold=True)}"
+            f"  {click.style(pdp['type'], fg='cyan')}"
+            f"  {click.style(pdp['endpoint'], fg='bright_black')}"
+        )
+        if workspaces:
+            click.echo(f"    workspaces: {', '.join(workspaces)}")
+        if pdp.get("policies"):
+            names = [p.get("name", p.get("id", "?")) for p in pdp["policies"]]
+            click.echo(f"    policies:   {', '.join(names)}")
+        else:
+            click.echo(f"    policies:   (none)")
+
+
+@policies.command("show")
+@click.argument("pdp_name", required=False, default=None)
+def policies_show(pdp_name: str | None):
+    """Show full policy content for a PDP (interactive if name omitted)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    from steve_cli.policies import PolicyClient
+    try:
+        pdps = PolicyClient().list_pdps()
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+    if not pdps:
+        click.echo("No PDPs registered.")
+        return
+    if pdp_name is None:
+        pdp_name = questionary.select(
+            "Select a PDP:",
+            choices=[p["name"] for p in pdps],
+        ).ask()
+        if pdp_name is None:
+            sys.exit(0)
+    pdp = next((p for p in pdps if p["name"] == pdp_name), None)
+    if not pdp:
+        click.secho(f"PDP '{pdp_name}' not found.", fg="red", err=True)
+        sys.exit(1)
+    click.echo(f"\n{click.style(pdp['name'], fg='blue', bold=True)}  {pdp['type']}  {pdp['endpoint']}")
+    import json as _json
+    policies_list = pdp.get("policies", [])
+    fragments_list = pdp.get("fragments", [])
+    if not policies_list and not fragments_list:
+        click.echo("  (no policies)")
+        return
+    for pol in policies_list:
+        click.echo(f"\n  {click.style(pol.get('name', pol.get('id', '?')), fg='cyan')}  {click.style('rego', fg='bright_black')}")
+        content = pol.get("content", pol.get("rawContent", ""))
+        if isinstance(content, dict):
+            content = _json.dumps(content, indent=2)
+        for line in str(content).splitlines():
+            click.echo(f"    {line}")
+    for frag in fragments_list:
+        updated = frag.get("updatedAt", frag.get("createdAt", ""))
+        click.echo(f"\n  {click.style(frag.get('workspace', '?'), fg='cyan')}  {click.style(frag.get('syntax', '?'), fg='magenta')}  {click.style(updated, fg='bright_black')}")
+        content = frag.get("content", {})
+        for line in _json.dumps(content, indent=2).splitlines():
+            click.echo(f"    {line}")
+
+
+@policies.command("diff")
+@click.option('--file', '-f', type=click.Path(path_type=Path),
+              help='Path to policies YAML file (default: ./policies/access.yaml)')
+@click.argument("pdp_name", required=False, default=None)
+def policies_diff(file: Path | None, pdp_name: str | None):
+    """Diff local access.yaml (expanded) against what is applied on a PDP."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    import json as _json
+    import difflib
+    import yaml
+    from steve_cli.policies import PolicyClient
+    from steve_cli.storage.branch import get_branch_prefix
+
+    path = Path(file) if file else Path.cwd() / "policies" / "access.yaml"
+    if not path.exists():
+        click.secho(f"Policies file not found: {path}", fg="red", err=True)
+        sys.exit(1)
+
+    config = yaml.safe_load(path.read_text())
+    local_rules = config.get("rules", [])
+    sanitized = get_branch_prefix()
+    from steve_cli.policies.client import _expand_rules
+    expanded = _expand_rules(local_rules, sanitized)
+    local_text = _json.dumps({"rules": expanded}, indent=2)
+
+    try:
+        client = PolicyClient()
+        pdps = client.list_pdps()
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+
+    if not pdps:
+        click.echo("No PDPs registered.")
+        return
+
+    if pdp_name is None:
+        pdp_cfg = config.get("pdp", {})
+        pdp_name = pdp_cfg.get("name")
+        if pdp_name not in [p["name"] for p in pdps]:
+            pdp_name = questionary.select(
+                "Select a PDP to diff against:",
+                choices=[p["name"] for p in pdps],
+            ).ask()
+            if pdp_name is None:
+                sys.exit(0)
+
+    pdp = next((p for p in pdps if p["name"] == pdp_name), None)
+    if not pdp:
+        click.secho(f"PDP '{pdp_name}' not found.", fg="red", err=True)
+        sys.exit(1)
+
+    remote_rules = []
+    for frag in pdp.get("fragments", []):
+        content = frag.get("content", {})
+        if isinstance(content, dict) and "rules" in content:
+            remote_rules.extend(content["rules"])
+    for pol in pdp.get("policies", []):
+        content = pol.get("content", {})
+        if isinstance(content, dict) and "rules" in content:
+            remote_rules.extend(content["rules"])
+    remote_text = _json.dumps({"rules": remote_rules}, indent=2)
+
+    diff = list(difflib.unified_diff(
+        remote_text.splitlines(),
+        local_text.splitlines(),
+        fromfile=f"remote/{pdp_name}",
+        tofile=f"local/{path.name} (branch: {sanitized})",
+        lineterm="",
+    ))
+
+    if not diff:
+        click.secho("No differences.", fg="green")
+        return
+
+    for line in diff:
+        if line.startswith("+"):
+            click.secho(line, fg="green")
+        elif line.startswith("-"):
+            click.secho(line, fg="red")
+        else:
+            click.echo(line)
+
+
+@policies.command("rm")
+@click.argument("pdp_name", required=False, default=None)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+def policies_rm(pdp_name: str | None, yes: bool):
+    """Delete a registered PDP (interactive if name omitted)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    from steve_cli.policies import PolicyClient
+    try:
+        client = PolicyClient()
+        pdps = client.list_pdps()
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+    if not pdps:
+        click.echo("No PDPs registered.")
+        return
+    if pdp_name is None:
+        pdp_name = questionary.select(
+            "Select a PDP to delete:",
+            choices=[p["name"] for p in pdps],
+        ).ask()
+        if pdp_name is None:
+            sys.exit(0)
+    pdp = next((p for p in pdps if p["name"] == pdp_name), None)
+    if not pdp:
+        click.secho(f"PDP '{pdp_name}' not found.", fg="red", err=True)
+        sys.exit(1)
+    if not yes:
+        if not questionary.confirm(f"Delete PDP '{pdp_name}'?", default=False).ask():
+            click.echo("Aborted.")
+            return
+    try:
+        client.delete_pdp(pdp["id"])
+        click.secho(f"Deleted PDP '{pdp_name}'.", fg="green")
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+
+
+@policies.command("policy-rm")
+@click.argument("pdp_name", required=False, default=None)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+def policies_policy_rm(pdp_name: str | None, yes: bool):
+    """Delete a raw rego policy from a PDP (interactive if name omitted)."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    from steve_cli.policies import PolicyClient
+    try:
+        client = PolicyClient()
+        pdps = client.list_pdps()
+    except Exception as e:
+        click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
+        sys.exit(1)
+    if not pdps:
+        click.echo("No PDPs registered.")
+        return
+    if pdp_name is None:
+        pdp_name = questionary.select(
+            "Select a PDP:",
+            choices=[p["name"] for p in pdps],
+        ).ask()
+        if pdp_name is None:
+            sys.exit(0)
+    pdp = next((p for p in pdps if p["name"] == pdp_name), None)
+    if not pdp:
+        click.secho(f"PDP '{pdp_name}' not found.", fg="red", err=True)
+        sys.exit(1)
+    policies_list = pdp.get("policies", [])
+    if not policies_list:
+        click.echo(f"No policies on PDP '{pdp_name}'.")
+        return
+    choices = [p.get("name", p.get("id", "?")) for p in policies_list]
+    policy_name = questionary.select(
+        "Select a policy to delete:",
+        choices=choices,
+    ).ask()
+    if policy_name is None:
+        sys.exit(0)
+    policy = next((p for p in policies_list if p.get("name", p.get("id")) == policy_name), None)
+    if not yes:
+        if not questionary.confirm(f"Delete policy '{policy_name}' from PDP '{pdp_name}'?", default=False).ask():
+            click.echo("Aborted.")
+            return
+    try:
+        client.delete_pdp_policy(policy["id"])
+        click.secho(f"Deleted policy '{policy_name}' from PDP '{pdp_name}'.", fg="green")
     except Exception as e:
         click.secho(f"ERROR: {e}", fg="red", bold=True, err=True)
         sys.exit(1)
