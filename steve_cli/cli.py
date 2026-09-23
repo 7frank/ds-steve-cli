@@ -948,7 +948,8 @@ def policies_apply(file: Path | None):
     from steve_cli.policies import PolicyClient
     policies_file = Path(file) if file else None
     try:
-        PolicyClient().apply_from_file(policies_file)
+        branch, sanitized = PolicyClient().apply_from_file(policies_file)
+        click.secho(f"Branch: {branch} → schema suffix __{sanitized}", fg="cyan")
         click.secho("Policies applied successfully.", fg="green")
     except FileNotFoundError as e:
         click.secho(str(e), fg="red", err=True)

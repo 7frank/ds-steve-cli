@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 _POLICY_VERSION = "v0"
+
+
+def _expand_schema(schema: str, sanitized_branch: str) -> str:
+    if "__" in schema:
+        return schema
+    return f"{schema}__{sanitized_branch}"
+
+
+def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str) -> list[dict[str, Any]]:
+    expanded = []
+    for rule in rules:
+        rule = deepcopy(rule)
+        for entry in rule.get("tables", []):
+            if "schema" in entry:
+                entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
+        for entry in rule.get("columns", []):
+            if "schema" in entry:
+                entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
+        expanded.append(rule)
+    return expanded
 
 
 class PolicyClient:
@@ -68,7 +89,7 @@ class PolicyClient:
             ],
         })
 
-    def apply_from_file(self, policies_file: Path | None = None) -> None:
+    def apply_from_file(self, policies_file: Path | None = None) -> tuple[str, str]:
         path = policies_file or Path.cwd() / "policies" / "access.yaml"
         if not path.exists():
             raise FileNotFoundError(f"Policies file not found: {path}")
@@ -78,6 +99,11 @@ class PolicyClient:
         workspace = config["workspace"]
         pdp_cfg = config["pdp"]
         rules = config.get("rules", [])
+
+        from steve_cli.storage.branch import get_branch_prefix
+        sanitized = get_branch_prefix()
+        branch = sanitized
+        rules = _expand_rules(rules, sanitized)
 
         pdp = self.register_pdp(
             name=pdp_cfg["name"],
@@ -91,3 +117,5 @@ class PolicyClient:
         if errors:
             reasons = "; ".join(e["reason"] for e in errors)
             raise RuntimeError(f"Failed to apply {len(errors)} policy fragment(s): {reasons}")
+
+        return branch, sanitized
