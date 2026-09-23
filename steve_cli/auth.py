@@ -74,6 +74,8 @@ def get_s3_endpoint(workspace_id: Optional[str] = None) -> Optional[str]:
 
 
 def get_service_url(service: str, workspace_id: Optional[str] = None) -> Optional[str]:
+    import os
+    workspace_id = workspace_id or os.environ.get("WORKSPACE_ID")
     entry = _get_workspace_entry(workspace_id)
     base_url = entry.get("base_url")
     if not base_url or not workspace_id:
