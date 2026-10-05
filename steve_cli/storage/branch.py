@@ -33,6 +33,21 @@ def get_branch_prefix() -> str:
             branch = result.stdout.strip()
             if branch and branch != "HEAD":
                 return _sanitize(branch)
+            if branch == "HEAD":
+                sha_result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if sha_result.returncode == 0 and sha_result.stdout.strip():
+                    short_sha = sha_result.stdout.strip()
+                    logger.warning(
+                        "Detached HEAD: using commit SHA as branch prefix (sha_%s). "
+                        "Set STEVE_BRANCH to override.",
+                        short_sha,
+                    )
+                    return f"sha_{short_sha}"
     except Exception as exc:
         logger.debug("git branch detection failed: %s", exc)
 
