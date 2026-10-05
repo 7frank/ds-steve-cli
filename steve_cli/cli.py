@@ -1371,6 +1371,7 @@ def status(env_file: tuple, no_check: bool):
     expires_at = entry.get("expires_at", "")
     if token:
         expiry_warn = False
+        token_expired = False
         expiry_str = ", expires never" if not expires_at else ""
         if expires_at:
             try:
@@ -1388,6 +1389,7 @@ def status(env_file: tuple, no_check: bool):
                         ago = f"{s // 86400}d ago"
                     expiry_str = f", expired {ago}"
                     expiry_warn = True
+                    token_expired = True
                 elif total_seconds < 3600:
                     expiry_str = f", expires in {total_seconds // 60}m ⚠"
                     expiry_warn = True
@@ -1422,12 +1424,18 @@ def status(env_file: tuple, no_check: bool):
                 )
                 with urllib.request.urlopen(_req, timeout=4) as _r:
                     _r.read()
-                _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
+                if token_expired:
+                    _row("Auth", f"✗ token expired  (stp_***{token[-4:]}{expiry_str}) — run: steve login", "red")
+                else:
+                    _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
             except urllib.error.HTTPError as _e:
                 if _e.code == 401:
                     _row("Auth", f"✗ token invalid/revoked  (stp_***{token[-4:]}{expiry_str})", "red")
                 else:
-                    _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
+                    if token_expired:
+                        _row("Auth", f"✗ token expired  (stp_***{token[-4:]}{expiry_str}) — run: steve login", "red")
+                    else:
+                        _row("Auth", f"✓ token valid  (stp_***{token[-4:]}{expiry_str})", "green" if not expiry_warn else "yellow")
             except Exception as _e:
                 _row("Auth", f"{token_display}  (validation failed: {_e})", token_color)
         else:
