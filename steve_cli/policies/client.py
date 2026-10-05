@@ -15,9 +15,9 @@ _POLICY_VERSION = "v0"
 
 
 def _expand_schema(schema: str, sanitized_branch: str) -> str:
-    if "__" in schema:
-        return schema
-    return f"{schema}__{sanitized_branch}"
+    if schema == sanitized_branch or not schema:
+        return sanitized_branch
+    return schema
 
 
 def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str, workspace: str = "") -> list[dict[str, Any]]:
@@ -28,7 +28,7 @@ def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str, workspace:
             if "schema" in entry:
                 entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
                 if workspace and "catalogs" not in entry:
-                    tier = entry["schema"].split("__")[0].rsplit("_", 1)[-1]
+                    tier = entry.get("tier", "bronze")
                     entry["catalogs"] = [f"{workspace}-{tier}"]
         for entry in rule.get("columns", []):
             if "schema" in entry:
@@ -134,7 +134,7 @@ class PolicyClient:
 
         results: list[str] = []
         for schema, tables in seen.items():
-            tier = schema.split("__")[0].rsplit("_", 1)[-1] if "__" in schema else "bronze"
+            tier = "bronze"
             ws_clean = workspace_name.lower().replace("-", "_") if workspace_name else ""
             catalog = f"{workspace_name}-{tier}" if workspace_name else f"minio-{tier}"
 

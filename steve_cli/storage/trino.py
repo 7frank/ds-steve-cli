@@ -15,9 +15,8 @@ from .branch import get_branch_prefix
 logger = logging.getLogger(__name__)
 
 
-def _derive_schema(tier: str, workspace: str | None, branch: str) -> str:
-    base = f"{workspace.lower().replace('-', '_')}_{tier.lower()}" if workspace else tier.lower()
-    return f"{base}__{branch}"
+def _derive_schema(_tier: str, _workspace: str | None, branch: str) -> str:
+    return branch
 
 
 class TrinoStorage:

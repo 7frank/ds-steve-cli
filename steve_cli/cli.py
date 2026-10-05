@@ -1479,8 +1479,7 @@ def status(env_file: tuple, no_check: bool):
         if trino_schema_explicit:
             schema = trino_schema_explicit
         elif resolved_workspace:
-            ws_clean = resolved_workspace.lower().replace("-", "_")
-            schema = f"{ws_clean}_{tier}__{branch}"
+            schema = branch
         else:
             schema = f"(workspace not set — set WORKSPACE_NAME)"
         _row(f"Schema {tier}", schema, "cyan" if resolved_workspace or trino_schema_explicit else "yellow")
