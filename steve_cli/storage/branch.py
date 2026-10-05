@@ -51,5 +51,6 @@ def get_branch_prefix() -> str:
     except Exception as exc:
         logger.debug("git branch detection failed: %s", exc)
 
-    logger.warning("Could not detect git branch; defaulting to 'main'")
-    return "main"
+    raise RuntimeError(
+        "Could not detect git branch. Set STEVE_BRANCH=<branch-name> and retry."
+    )
