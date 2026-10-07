@@ -21,6 +21,15 @@ def _derive_schema(_tier: str, _workspace: str | None, branch: str) -> str:
 
 class TrinoStorage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
+        # aiobotocore 3.9+ defaults to STREAMING-UNSIGNED-PAYLOAD-TRAILER (flexible checksums)
+        # which Lakekeeper's remote signing proxy and MinIO don't support.
+        os.environ.setdefault('AWS_REQUEST_CHECKSUM_CALCULATION', 'when_required')
+        # Reduce keepalive from 12s to 3s: MinIO closes server-side connections faster than
+        # aiobotocore's default, causing stale pooled connections to return bare HTTP 403
+        # ("Forbidden", no S3 XML) on reuse. 3s ensures idle connections are evicted before
+        # the next put_bytes call reaches the S3 write phase.
+        import aiobotocore.httpsession
+        aiobotocore.httpsession.DEFAULT_KEEPALIVE_TIMEOUT = 3
         from steve_cli.auth import get_service_url
         self._branch = get_branch_prefix()
         self._tier = tier.lower()
@@ -46,6 +55,7 @@ class TrinoStorage:
         _lk_env = os.getenv("LAKEKEEPER_ENDPOINT")
         _lk_svc = get_service_url("lakekeeper", self._workspace_id)
         self._lakekeeper_endpoint = _lk_env.rstrip("/") if _lk_env else (_lk_svc.rstrip("/") + "/catalog" if _lk_svc else None)
+        self._lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
         _iceberg_bucket = os.getenv(f"{tier.upper()}_BUCKET", "")
         if _iceberg_bucket:
@@ -54,53 +64,28 @@ class TrinoStorage:
             raise OSError(
                 f"TrinoStorage: missing bucket configuration for tier '{tier}' — "
                 f"{tier.upper()}_BUCKET is not set.\n"
-                f"  Required env vars: {tier.upper()}_BUCKET, {tier.upper()}_ACCESS_KEY, {tier.upper()}_SECRET_KEY\n"
                 f"  This workspace may only have read access to the '{tier}' tier. "
                 f"Write access requires provisioning credentials (run 'uv run steve setup env' or check workspace provisioning)."
             )
-        self.__iceberg_catalog = None
 
-    @property
-    def _iceberg_catalog(self):
-        if self.__iceberg_catalog is None:
+        if os.getenv("STEVE_DIRECT_S3") == "1":
             from pyiceberg.catalog.rest import RestCatalog
             from pyiceberg.io import load_file_io
             from pyiceberg.table import Table
-
-            # WORKAROUND: Lakekeeper's remote S3 presigner is bypassed for external access.
-            #
-            # Lakekeeper returns `s3.signer` / `s3.signer.uri` in the table config, which
-            # pyiceberg uses to sign S3 requests via Lakekeeper's signing endpoint. This works
-            # inside the cluster but fails from a laptop because:
-            #   1. The signed URI Lakekeeper produces contains the cluster-internal hostname
-            #      (e.g. http://minio:9000) which is unreachable externally.
-            #   2. Even after overriding the signer URI to the public lakekeeper subdomain,
-            #      Lakekeeper's signer returns HTTP 500 for URIs with the public minio hostname
-            #      because it only knows the internal minio endpoint.
-            #
-            # Current workaround: strip all signer config from the merged table properties and
-            # use direct S3 credentials (access-key + secret-key) with the public minio endpoint
-            # from ~/.steve/credentials.json. This bypasses Lakekeeper's access control for S3
-            # writes — credentials live on disk rather than being vended by the cluster.
-            #
-            # To revert: configure Lakekeeper with its public S3 endpoint so presigned URIs
-            # contain a resolvable hostname, then remove the merged.pop() calls below and
-            # restore `s3.signer.uri: lakekeeper_base` in s3_overrides.
-            tier = self._tier.upper()
-            lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
             from steve_cli.auth import get_s3_endpoint as _get_s3_ep
+            _tier = tier.upper()
             _s3_ep = _get_s3_ep(self._workspace_id) or os.getenv("S3_ENDPOINT", "http://minio:9000")
-            s3_overrides = {
+            _s3_overrides = {
                 "s3.endpoint": _s3_ep,
-                "s3.access-key-id": os.getenv(f"{tier}_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", ""),
-                "s3.secret-access-key": os.getenv(f"{tier}_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", ""),
+                "s3.access-key-id": os.getenv(f"{_tier}_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", ""),
+                "s3.secret-access-key": os.getenv(f"{_tier}_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", ""),
                 "s3.path-style-access": "true",
             } if self._lakekeeper_endpoint else {}
+            _base = self._lakekeeper_base
 
             class _PatchedRestCatalog(RestCatalog):
                 def _response_to_table(self_, identifier_tuple, table_response):
-                    merged = {**table_response.metadata.properties, **table_response.config, **s3_overrides, "uri": lakekeeper_base}
-                    # Strip remote-signer config — see WORKAROUND comment above.
+                    merged = {**table_response.metadata.properties, **table_response.config, **_s3_overrides, "uri": _base}
                     merged.pop("s3.signer", None)
                     merged.pop("s3.signer.uri", None)
                     merged.pop("s3.signer.endpoint", None)
@@ -113,27 +98,40 @@ class TrinoStorage:
                         config=table_response.config,
                     )
 
+            self._catalog_cls = _PatchedRestCatalog
+            self._extra_catalog_kwargs: dict = {**_s3_overrides}
+        else:
+            self._catalog_cls = None
+            self._extra_catalog_kwargs = {}
+
+        self.__iceberg_catalog = None
+
+    @property
+    def _iceberg_catalog(self):
+        if self.__iceberg_catalog is None:
+            from pyiceberg.catalog.rest import RestCatalog
             from steve_cli.auth import get_token
             stp_token = get_token(self._workspace_id)
             token_kwargs = {"token": stp_token} if stp_token else {}
+            catalog_cls = self._catalog_cls or RestCatalog
             try:
-                catalog = _PatchedRestCatalog(
+                catalog = catalog_cls(
                     "lakekeeper",
-                    uri=lakekeeper_base,
+                    uri=self._lakekeeper_base,
                     warehouse=self._lakekeeper_warehouse,
-                    **s3_overrides,
+                    **self._extra_catalog_kwargs,
                     **token_kwargs,
                 )
             except Exception as exc:
                 msg = str(exc)
                 if "NoSuchWarehouseException" in msg or "does not exist" in msg:
                     raise RuntimeError(
-                        f"Lakekeeper warehouse '{self._lakekeeper_warehouse}' not found at {lakekeeper_base}.\n"
+                        f"Lakekeeper warehouse '{self._lakekeeper_warehouse}' not found at {self._lakekeeper_base}.\n"
                         f"The workspace may not have been provisioned yet — ensure the workspace was created in the data mesh before running this job."
                     ) from None
                 raise
-            if self._lakekeeper_endpoint:
-                catalog.uri = lakekeeper_base
+            if self._catalog_cls and self._lakekeeper_endpoint:
+                catalog.uri = self._lakekeeper_base
             self.__iceberg_catalog = catalog
         return self.__iceberg_catalog
 
@@ -277,7 +275,6 @@ class TrinoStorage:
         import datetime
 
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
-        lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
         namespace_props = {"location": self._iceberg_location_prefix}
         created = False
         try:
@@ -291,12 +288,12 @@ class TrinoStorage:
             if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
                 raise OSError(
                     f"TrinoStorage: namespace '{self.schema}' creation denied at Lakekeeper "
-                    f"[{lakekeeper_base}] — check that the token has write access to warehouse "
+                    f"[{self._lakekeeper_base}] — check that the token has write access to warehouse "
                     f"'{self._lakekeeper_warehouse}'"
                 ) from exc
             raise OSError(
                 f"TrinoStorage: namespace '{self.schema}' creation failed at Lakekeeper "
-                f"[{lakekeeper_base}] — {type(exc).__name__}: {exc}"
+                f"[{self._lakekeeper_base}] — {type(exc).__name__}: {exc}"
             ) from exc
 
         if created:
@@ -333,30 +330,66 @@ class TrinoStorage:
             logger.warning("Could not ensure Trino schema %s.%s: %s", self.catalog, self.schema, exc)
 
     def put_bytes(self, data: bytes, path: str) -> None:
-        from pyiceberg.exceptions import NoSuchTableError
+        from pyiceberg.exceptions import NoSuchTableError, SignError
 
         arrow_table = pq.read_table(io.BytesIO(data))
         table_id = f"{self.schema}.{self._table_name(path)}"
         catalog = self._iceberg_catalog
-        lakekeeper_base = self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog"
+        lakekeeper_base = self._lakekeeper_base
 
         self._ensure_namespace()
 
         def _append(iceberg_table, arrow_table, table_id):
+            if os.getenv("STEVE_TRINO_TRACE") == "1":
+                io_props = getattr(iceberg_table.io, "properties", {})
+                logger.warning(
+                    "[trino] append: table=%s, location=%s, s3.endpoint=%s, signer.uri=%s",
+                    table_id,
+                    iceberg_table.location(),
+                    io_props.get("s3.endpoint", "n/a"),
+                    io_props.get("s3.signer.uri", "n/a"),
+                )
+
+            s3_client = None
+            if os.getenv("STEVE_TRINO_TRACE") == "1":
+                try:
+                    s3_fs = iceberg_table.io._get_fs("s3")
+                    s3_client = s3_fs.s3
+
+                    def _trace_send(request, **kwargs):
+                        logger.warning("[trino] s3.%s %s", request.method, getattr(request, "url", "?"))
+
+                    s3_client.meta.events.register("before-send.s3", _trace_send, unique_id="steve-trino-s3-trace")
+                except Exception as hook_exc:
+                    logger.warning("[trino] TRACE hook failed: %s", hook_exc)
+                    s3_client = None
+
             try:
                 iceberg_table.append(arrow_table)
+            except SignError as exc:
+                raise OSError(
+                    f"TrinoStorage: Lakekeeper refused to sign write for '{table_id}' "
+                    f"[signer={lakekeeper_base}, warehouse={self._lakekeeper_warehouse}] — {exc}\n"
+                    f"  Hint: the token may lack write permissions on this warehouse."
+                ) from exc
             except Exception as exc:
                 msg = str(exc)
                 if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
                     raise OSError(
-                        f"TrinoStorage: write to '{table_id}' denied via Lakekeeper [{lakekeeper_base}] — "
-                        f"Access Denied on warehouse '{self._lakekeeper_warehouse}' "
-                        f"(check S3 bucket policy and token permissions)"
+                        f"TrinoStorage: write to '{table_id}' denied by MinIO "
+                        f"[location={iceberg_table.location()}, warehouse={self._lakekeeper_warehouse}] — "
+                        f"{type(exc).__name__}: {exc}"
                     ) from exc
                 raise OSError(
                     f"TrinoStorage: write to '{table_id}' failed via Lakekeeper [{lakekeeper_base}] — "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
+            finally:
+                if s3_client is not None:
+                    try:
+                        s3_client.meta.events.unregister("before-send.s3", unique_id="steve-trino-s3-trace")
+                    except Exception:
+                        pass
 
         try:
             iceberg_table = catalog.load_table(table_id)
@@ -399,13 +432,19 @@ class TrinoStorage:
             iceberg_schema = Schema(*fields)
             try:
                 iceberg_table = catalog.create_table(table_id, schema=iceberg_schema)
+            except SignError as exc:
+                raise OSError(
+                    f"TrinoStorage: Lakekeeper refused to sign table creation for '{table_id}' "
+                    f"[signer={lakekeeper_base}, warehouse={self._lakekeeper_warehouse}] — {exc}\n"
+                    f"  Hint: the token may lack write permissions on this warehouse."
+                ) from exc
             except Exception as exc:
                 msg = str(exc)
                 if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
                     raise OSError(
-                        f"TrinoStorage: create table '{table_id}' denied via Lakekeeper [{lakekeeper_base}] — "
-                        f"Access Denied on warehouse '{self._lakekeeper_warehouse}' "
-                        f"(check S3 bucket policy and token permissions)"
+                        f"TrinoStorage: create table '{table_id}' denied by MinIO "
+                        f"[location={self._iceberg_location_prefix}, warehouse={self._lakekeeper_warehouse}] — "
+                        f"{type(exc).__name__}: {exc}"
                     ) from exc
                 raise OSError(
                     f"TrinoStorage: create table '{table_id}' failed via Lakekeeper [{lakekeeper_base}] — "
