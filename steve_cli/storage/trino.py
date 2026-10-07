@@ -19,6 +19,42 @@ def _derive_schema(_tier: str, _workspace: str | None, branch: str) -> str:
     return branch
 
 
+def _patch_pyiceberg_get_fs_once() -> None:
+    """Fix pyiceberg race: per-thread get_fs() causes repeated _s3() unregister+register_last
+    cycles, leaving a window where S3V4RestSigner is absent from before-sign.s3 handlers.
+    Replace get_fs() with an instance-level shared cache so _s3() runs only once per
+    FsspecFileIO instance (from the calling thread), eliminating the re-registration race."""
+    try:
+        import threading as _t
+        from pyiceberg.io.fsspec import FsspecFileIO
+
+        _caches: dict[int, dict] = {}
+        _lock = _t.Lock()
+        _orig = FsspecFileIO.get_fs
+
+        def _get_fs_shared(self, scheme: str, hostname=None):
+            fio_id = id(self)
+            key = (scheme, hostname)
+            cache = _caches.get(fio_id)
+            if cache is not None and key in cache:
+                return cache[key]
+            with _lock:
+                if fio_id not in _caches:
+                    _caches[fio_id] = {}
+                cache = _caches[fio_id]
+                if key not in cache:
+                    cache[key] = _orig(self, scheme, hostname)
+            return cache[key]
+
+        FsspecFileIO.get_fs = _get_fs_shared
+        logger.debug("Applied pyiceberg get_fs instance-level cache patch")
+    except Exception as exc:
+        logger.warning("Could not patch pyiceberg FsspecFileIO.get_fs: %s", exc)
+
+
+_patch_pyiceberg_get_fs_once()
+
+
 class TrinoStorage:
     def __init__(self, tier: str = "bronze", workspace: str | None = None):
         # aiobotocore 3.9+ defaults to STREAMING-UNSIGNED-PAYLOAD-TRAILER (flexible checksums)
@@ -353,18 +389,22 @@ class TrinoStorage:
             s3_client = None
             if os.getenv("STEVE_TRINO_TRACE") == "1":
                 try:
+                    import threading as _threading
                     s3_fs = iceberg_table.io._get_fs("s3")
                     s3_client = s3_fs.s3
 
-                    _sign_t0 = [None]
-
                     def _trace_sign(request, **kwargs):
-                        _sign_t0[0] = time.perf_counter()
+                        logger.warning("[trino] s3 SIGN %s req_id=%x (thread=%s)",
+                                       request.method, id(request),
+                                       _threading.current_thread().name)
 
                     def _trace_send(request, **kwargs):
-                        sign_ms = int((time.perf_counter() - _sign_t0[0]) * 1000) if _sign_t0[0] else -1
-                        logger.warning("[trino] s3.%s %s (sign=%dms)", request.method, getattr(request, "url", "?"), sign_ms)
-                        _sign_t0[0] = None
+                        hdrs = dict(getattr(request, "headers", {}))
+                        auth = next((v for k, v in hdrs.items() if k.lower() == "authorization"), "<MISSING>")
+                        logger.warning("[trino] s3.%s req_id=%x auth=%s (thread=%s)",
+                                       request.method, id(request),
+                                       auth[:24] if auth != "<MISSING>" else "<MISSING>",
+                                       _threading.current_thread().name)
 
                     def _trace_retry(response=None, operation=None, request_dict=None, **kwargs):
                         if not response:
