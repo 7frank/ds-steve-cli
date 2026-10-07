@@ -356,10 +356,27 @@ class TrinoStorage:
                     s3_fs = iceberg_table.io._get_fs("s3")
                     s3_client = s3_fs.s3
 
-                    def _trace_send(request, **kwargs):
-                        logger.warning("[trino] s3.%s %s", request.method, getattr(request, "url", "?"))
+                    _sign_t0 = [None]
 
+                    def _trace_sign(request, **kwargs):
+                        _sign_t0[0] = time.perf_counter()
+
+                    def _trace_send(request, **kwargs):
+                        sign_ms = int((time.perf_counter() - _sign_t0[0]) * 1000) if _sign_t0[0] else -1
+                        logger.warning("[trino] s3.%s %s (sign=%dms)", request.method, getattr(request, "url", "?"), sign_ms)
+                        _sign_t0[0] = None
+
+                    def _trace_retry(response=None, operation=None, request_dict=None, **kwargs):
+                        if not response:
+                            return
+                        status = getattr(response[0], "status_code", "?")
+                        if status >= 300:
+                            url = (request_dict or {}).get("url", "?")
+                            logger.warning("[trino] s3 <- %s %s %s", operation or "?", status, url)
+
+                    s3_client.meta.events.register("before-sign.s3", _trace_sign, unique_id="steve-trino-s3-sign")
                     s3_client.meta.events.register("before-send.s3", _trace_send, unique_id="steve-trino-s3-trace")
+                    s3_client.meta.events.register("needs-retry.s3", _trace_retry, unique_id="steve-trino-s3-retry")
                 except Exception as hook_exc:
                     logger.warning("[trino] TRACE hook failed: %s", hook_exc)
                     s3_client = None
@@ -386,10 +403,15 @@ class TrinoStorage:
                 ) from exc
             finally:
                 if s3_client is not None:
-                    try:
-                        s3_client.meta.events.unregister("before-send.s3", unique_id="steve-trino-s3-trace")
-                    except Exception:
-                        pass
+                    for event, uid in (
+                        ("before-sign.s3", "steve-trino-s3-sign"),
+                        ("before-send.s3", "steve-trino-s3-trace"),
+                        ("needs-retry.s3", "steve-trino-s3-retry"),
+                    ):
+                        try:
+                            s3_client.meta.events.unregister(event, unique_id=uid)
+                        except Exception:
+                            pass
 
         try:
             iceberg_table = catalog.load_table(table_id)
