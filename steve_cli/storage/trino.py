@@ -102,16 +102,18 @@ class TrinoStorage:
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
         _iceberg_bucket = os.getenv(f"{tier.upper()}_BUCKET", "")
         if _iceberg_bucket:
-            self._iceberg_location_prefix = f"s3://{_iceberg_bucket}/_iceberg/{self._branch}"
+            self._iceberg_location_prefix: str | None = f"s3://{_iceberg_bucket}/_iceberg/{self._branch}"
         else:
-            raise OSError(
-                f"TrinoStorage: missing bucket configuration for tier '{tier}' — "
-                f"{tier.upper()}_BUCKET is not set.\n"
-                f"  This workspace may only have read access to the '{tier}' tier. "
-                f"Write access requires provisioning credentials (run 'uv run steve setup env' or check workspace provisioning)."
-            )
+            self._iceberg_location_prefix = None
 
         if os.getenv("STEVE_DIRECT_S3") == "1":
+            if not self._iceberg_location_prefix:
+                raise OSError(
+                    f"TrinoStorage (STEVE_DIRECT_S3=1): missing bucket configuration for tier '{tier}' — "
+                    f"{tier.upper()}_BUCKET is not set.\n"
+                    f"  Direct S3 mode requires explicit bucket credentials "
+                    f"(run 'uv run steve setup env' or check workspace provisioning)."
+                )
             from pyiceberg.catalog.rest import RestCatalog
             from pyiceberg.io import load_file_io
             from pyiceberg.table import Table
@@ -318,7 +320,7 @@ class TrinoStorage:
         import datetime
 
         from pyiceberg.exceptions import NamespaceAlreadyExistsError
-        namespace_props = {"location": self._iceberg_location_prefix}
+        namespace_props = {"location": self._iceberg_location_prefix} if self._iceberg_location_prefix else {}
         created = False
         try:
             self._iceberg_catalog.create_namespace(self.schema, properties=namespace_props)
@@ -356,7 +358,7 @@ class TrinoStorage:
                     "branch": [self._branch],
                     "tier": [self._tier],
                     "schema_name": [self.schema],
-                    "iceberg_location": [self._iceberg_location_prefix],
+                    "iceberg_location": [self._iceberg_location_prefix or ""],
                     "created_at": [datetime.datetime.now(datetime.timezone.utc).isoformat()],
                 }))
                 logger.info("Created _meta table in namespace %s", self.schema)
@@ -364,9 +366,9 @@ class TrinoStorage:
                 logger.warning("Could not create _meta table in %s: %s", self.schema, exc)
 
         try:
+            _location_clause = f" WITH (location = '{self._iceberg_location_prefix}')" if self._iceberg_location_prefix else ""
             self._execute(
-                f'CREATE SCHEMA IF NOT EXISTS "{self.catalog}".{self.schema} '
-                f"WITH (location = '{self._iceberg_location_prefix}')"
+                f'CREATE SCHEMA IF NOT EXISTS "{self.catalog}".{self.schema}{_location_clause}'
             )
             logger.debug("Ensured Trino schema %s.%s", self.catalog, self.schema)
         except Exception as exc:
@@ -512,7 +514,7 @@ class TrinoStorage:
                 if "403" in msg or "Access Denied" in msg or "Forbidden" in msg:
                     raise OSError(
                         f"TrinoStorage: create table '{table_id}' denied by MinIO "
-                        f"[location={self._iceberg_location_prefix}, warehouse={self._lakekeeper_warehouse}] — "
+                        f"[location={self._iceberg_location_prefix or '<lakekeeper-managed>'}, warehouse={self._lakekeeper_warehouse}] — "
                         f"{type(exc).__name__}: {exc}"
                     ) from exc
                 raise OSError(
@@ -530,7 +532,7 @@ class TrinoStorage:
             logger.warning(
                 "[trino] put_bytes: wrote %d rows → %s.%s  (warehouse=%s, location=%s%s)",
                 len(arrow_table), self.catalog, table_id,
-                self._lakekeeper_warehouse, self._iceberg_location_prefix,
+                self._lakekeeper_warehouse, self._iceberg_location_prefix or "<lakekeeper-managed>",
                 f", snapshot={snapshot.snapshot_id}" if snapshot else "",
             )
         logger.info("Written %d rows to %s", len(arrow_table), table_id)
