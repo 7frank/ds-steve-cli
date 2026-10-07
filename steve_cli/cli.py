@@ -1548,7 +1548,11 @@ def upgrade():
         env=os.environ.copy(),
         check=False,
     )
-    sys.exit(result.returncode)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+    click.echo("🔒 Syncing lockfile...")
+    sync = subprocess.run(["uv", "sync"], env=os.environ.copy(), check=False)
+    sys.exit(sync.returncode)
 
 
 from steve_cli.ontology import ontology
