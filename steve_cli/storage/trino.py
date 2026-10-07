@@ -24,6 +24,13 @@ def _patch_pyiceberg_get_fs_once() -> None:
     cycles, leaving a window where S3V4RestSigner is absent from before-sign.s3 handlers.
     Replace get_fs() with an instance-level shared cache so _s3() runs only once per
     FsspecFileIO instance (from the calling thread), eliminating the re-registration race."""
+    logger.warning(
+            "Applied pyiceberg get_fs monkey-patch (instance-level cache) to work around "
+            "S3V4RestSigner race condition. Remove once upstream fixes are released: "
+            "https://github.com/apache/iceberg-python/issues/3625 "
+            "https://github.com/apache/iceberg-python/issues/3896"
+    )
+    
     try:
         import threading as _t
         from pyiceberg.io.fsspec import FsspecFileIO
@@ -47,7 +54,7 @@ def _patch_pyiceberg_get_fs_once() -> None:
             return cache[key]
 
         FsspecFileIO.get_fs = _get_fs_shared
-        logger.debug("Applied pyiceberg get_fs instance-level cache patch")
+
     except Exception as exc:
         logger.warning("Could not patch pyiceberg FsspecFileIO.get_fs: %s", exc)
 
