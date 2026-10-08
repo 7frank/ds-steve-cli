@@ -50,6 +50,9 @@ pandas = [
 lineage = [
     "openlineage-python>=1.0.0",
 ]
+lakekeeper = [
+    "pylakekeeper>=0.4.0",
+]
 validoopsie = [
     "validoopsie>=0.1.0",
     "polars>=1.8.2",

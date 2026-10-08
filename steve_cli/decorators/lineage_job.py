@@ -55,8 +55,15 @@ def lineage_job(
                     session=session,
                 )
 
+            def get_files(tier: str = "bronze", workspace: str | None = None) -> LineageStorage:
+                from steve_cli.storage.lakekeeper import LakekeeperStorage
+                return LineageStorage(
+                    storage=lambda: LakekeeperStorage(tier=tier, workspace=workspace),
+                    session=session,
+                )
+
             sig = inspect.signature(fn)
-            available = {"get_storage": get_storage, "get_tables": get_tables}
+            available = {"get_storage": get_storage, "get_tables": get_tables, "get_files": get_files}
             injectable = {k: v for k, v in available.items() if k in sig.parameters}
 
             try:
