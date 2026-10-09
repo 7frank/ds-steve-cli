@@ -951,7 +951,7 @@ def policies_apply(file: Path | None, validate: str | None):
     policies_file = Path(file) if file else None
     try:
         branch, sanitized = PolicyClient().apply_from_file(policies_file, validate=validate)
-        click.secho(f"Branch: {branch} → schema suffix __{sanitized}", fg="cyan")
+        click.secho(f"Branch: {branch} → schema: {sanitized}", fg="cyan")
         click.secho("Policies applied successfully.", fg="green")
     except FileNotFoundError as e:
         click.secho(str(e), fg="red", err=True)

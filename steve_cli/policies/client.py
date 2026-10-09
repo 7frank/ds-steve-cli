@@ -33,6 +33,9 @@ def _expand_rules(rules: list[dict[str, Any]], sanitized_branch: str, workspace:
         for entry in rule.get("columns", []):
             if "schema" in entry:
                 entry["schema"] = _expand_schema(entry["schema"], sanitized_branch)
+                if workspace and "catalogs" not in entry:
+                    tier = entry.get("tier", "bronze")
+                    entry["catalogs"] = [f"{workspace}-{tier}"]
         expanded.append(rule)
     return expanded
 
@@ -122,20 +125,20 @@ class PolicyClient:
         workspace_id = os.environ.get("WORKSPACE_ID")
         workspace_name = os.environ.get("WORKSPACE_NAME", "")
 
-        seen: dict[str, list[str]] = {}
+        seen: dict[tuple[str, str], list[str]] = {}  # (schema, tier) → tables
         for rule in rules:
             for entry in list(rule.get("tables", [])) + list(rule.get("columns", [])):
                 schema = entry.get("schema", "")
                 table = entry.get("table", "")
+                tier = entry.get("tier", "bronze")
                 if schema and table:
-                    seen.setdefault(schema, [])
-                    if table not in seen[schema]:
-                        seen[schema].append(table)
+                    key = (schema, tier)
+                    seen.setdefault(key, [])
+                    if table not in seen[key]:
+                        seen[key].append(table)
 
         results: list[str] = []
-        for schema, tables in seen.items():
-            tier = "bronze"
-            ws_clean = workspace_name.lower().replace("-", "_") if workspace_name else ""
+        for (schema, tier), tables in seen.items():
             catalog = f"{workspace_name}-{tier}" if workspace_name else f"minio-{tier}"
 
             try:
