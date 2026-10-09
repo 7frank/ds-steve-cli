@@ -213,6 +213,12 @@ class TrinoStorage:
         rows: list[dict] = []
         poll = 0
         while True:
+            if data.get("error"):
+                err = data["error"]
+                raise OSError(
+                    f"TrinoStorage: Trino query failed — {err.get('message', err)} "
+                    f"(type={err.get('errorType')}, code={err.get('errorCode')}, sql: {sql[:120]!r})"
+                )
             if "data" in data and "columns" in data:
                 col_names = [c["name"] for c in data["columns"]]
                 for row in data["data"]:
