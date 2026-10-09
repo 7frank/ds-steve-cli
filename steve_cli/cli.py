@@ -59,8 +59,24 @@ class JobsConfig:
                 return job
         return None
 
-    def list_jobs(self) -> List[str]:
-        return [job.get('name', 'unnamed') for job in self.jobs]
+    def _job_depths(self) -> dict[str, int]:
+        depths: dict[str, int] = {}
+        for job in self.jobs:
+            name = job.get("name", "")
+            parents = job.get("dependsOn", [])
+            depths[name] = max((depths.get(p, 0) for p in parents), default=-1) + 1
+        return depths
+
+    def list_jobs(self) -> List[questionary.Choice]:
+        depths = self._job_depths()
+        choices = []
+        for job in self.jobs:
+            name = job.get("name", "unnamed")
+            depth = depths.get(name, 0)
+            indent = "     " * depth
+            prefix = "└─ " if depth > 0 else ""
+            choices.append(questionary.Choice(title=f"{indent}{prefix}{name}", value=name))
+        return choices
 
 
 def run_job_command(job: Dict[str, Any]) -> int:
@@ -120,13 +136,13 @@ def jobs(ctx: click.Context, jobs_file: Optional[Path]):
     if ctx.invoked_subcommand is not None:
         return
     config = JobsConfig(jobs_file)
-    job_names = config.list_jobs()
-    if not job_names:
+    choices = config.list_jobs()
+    if not choices:
         click.echo("❌ No jobs found in jobs.yaml")
         return
     choice = questionary.select(
         "Select a job to run:",
-        choices=job_names,
+        choices=choices,
     ).ask()
     if choice is None:
         sys.exit(0)
@@ -140,9 +156,8 @@ def jobs(ctx: click.Context, jobs_file: Optional[Path]):
 def jobs_list(jobs_file: Optional[Path]):
     """List all available jobs."""
     config = JobsConfig(jobs_file)
-    job_names = config.list_jobs()
 
-    if not job_names:
+    if not config.jobs:
         click.echo("❌ No jobs found in jobs.yaml")
         return
 
