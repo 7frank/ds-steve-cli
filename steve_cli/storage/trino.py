@@ -192,6 +192,9 @@ class TrinoStorage:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+        if trace:
+            logger.warning(f"[trino] {self._base}" )
+
         t0 = time.perf_counter()
         try:
             resp = requests.post(f"{self._base}/v1/statement", data=sql, headers=headers)
