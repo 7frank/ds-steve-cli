@@ -405,12 +405,18 @@ class TrinoStorage:
         def _append(iceberg_table, arrow_table, table_id):
             if os.getenv("STEVE_TRINO_TRACE") == "1":
                 io_props = getattr(iceberg_table.io, "properties", {})
+                access_key = io_props.get("s3.access-key-id", "n/a")
+                session_tok = io_props.get("s3.session-token", None)
                 logger.warning(
-                    "[trino] append: table=%s, location=%s, s3.endpoint=%s, signer.uri=%s",
+                    "[trino] append: table=%s, location=%s, s3.endpoint=%s, signer.uri=%s, "
+                    "s3.access-key-id=%s, s3.session-token=%s, auth=%s",
                     table_id,
                     iceberg_table.location(),
                     io_props.get("s3.endpoint", "n/a"),
                     io_props.get("s3.signer.uri", "n/a"),
+                    access_key,
+                    (session_tok[:16] + "...") if session_tok else "none",
+                    type(self._auth).__name__,
                 )
 
             s3_client = None
