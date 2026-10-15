@@ -1,3 +1,4 @@
+from .auth import BearerTokenStrategy, CredentialsFileStrategy, EnvVarStrategy, TrinoAuthStrategy
 from .branch import get_branch_prefix
 from .protocol import Storage
 from .s3 import S3Storage
@@ -7,6 +8,10 @@ from .parquet import ParquetMetadata, extract_parquet_metadata
 from .metadata import FileMetadata, ColumnMetadata, MetadataExtractorPort, MetadataRegistry
 
 __all__ = [
+    "BearerTokenStrategy",
+    "CredentialsFileStrategy",
+    "EnvVarStrategy",
+    "TrinoAuthStrategy",
     "get_branch_prefix",
     "Storage",
     "S3Storage",

@@ -10,6 +10,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
+from steve_cli.storage.auth import CredentialsFileStrategy, TrinoAuthStrategy
+
 from .branch import get_branch_prefix
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,7 @@ def _patch_pyiceberg_get_fs_once() -> None:
     
     try:
         import threading as _t
+
         from pyiceberg.io.fsspec import FsspecFileIO
 
         _caches: dict[int, dict] = {}
@@ -63,7 +66,12 @@ _patch_pyiceberg_get_fs_once()
 
 
 class TrinoStorage:
-    def __init__(self, tier: str = "bronze", workspace: str | None = None):
+    def __init__(
+        self,
+        tier: str = "bronze",
+        workspace: str | None = None,
+        auth: TrinoAuthStrategy | None = None,
+    ):
         # aiobotocore 3.9+ defaults to STREAMING-UNSIGNED-PAYLOAD-TRAILER (flexible checksums)
         # which Lakekeeper's remote signing proxy and MinIO don't support.
         os.environ.setdefault('AWS_REQUEST_CHECKSUM_CALCULATION', 'when_required')
@@ -73,11 +81,12 @@ class TrinoStorage:
         # the next put_bytes call reaches the S3 write phase.
         import aiobotocore.httpsession
         aiobotocore.httpsession.DEFAULT_KEEPALIVE_TIMEOUT = 3
-        from steve_cli.auth import get_service_url
+
         self._branch = get_branch_prefix()
         self._tier = tier.lower()
         self._workspace_id = os.getenv("WORKSPACE_ID")
-        trino_endpoint = get_service_url("trino", self._workspace_id)
+        self._auth: TrinoAuthStrategy = auth if auth is not None else CredentialsFileStrategy(self._workspace_id)
+        trino_endpoint = self._auth.get_service_url("trino")
         if not trino_endpoint:
             from steve_cli.auth import _get_workspace_entry
             entry = _get_workspace_entry(self._workspace_id)
@@ -96,7 +105,7 @@ class TrinoStorage:
         self.user = os.getenv("TRINO_USER") or resolved_workspace or "admin"
         self._base = trino_endpoint.rstrip("/")
         _lk_env = os.getenv("LAKEKEEPER_ENDPOINT")
-        _lk_svc = get_service_url("lakekeeper", self._workspace_id)
+        _lk_svc = self._auth.get_service_url("lakekeeper")
         self._lakekeeper_endpoint = _lk_env.rstrip("/") if _lk_env else (_lk_svc.rstrip("/") + "/catalog" if _lk_svc else None)
         self._lakekeeper_base = (self._lakekeeper_endpoint or "http://lakekeeper:8181/catalog").rstrip("/")
         self._lakekeeper_warehouse = os.getenv("LAKEKEEPER_WAREHOUSE", default_catalog)
@@ -117,7 +126,9 @@ class TrinoStorage:
             from pyiceberg.catalog.rest import RestCatalog
             from pyiceberg.io import load_file_io
             from pyiceberg.table import Table
+
             from steve_cli.auth import get_s3_endpoint as _get_s3_ep
+            
             _tier = tier.upper()
             _s3_ep = _get_s3_ep(self._workspace_id) or os.getenv("S3_ENDPOINT", "http://minio:9000")
             _s3_overrides = {
@@ -155,8 +166,7 @@ class TrinoStorage:
     def _iceberg_catalog(self):
         if self.__iceberg_catalog is None:
             from pyiceberg.catalog.rest import RestCatalog
-            from steve_cli.auth import get_token
-            stp_token = get_token(self._workspace_id)
+            stp_token = self._auth.get_token()
             token_kwargs = {"token": stp_token} if stp_token else {}
             catalog_cls = self._catalog_cls or RestCatalog
             try:
@@ -181,14 +191,13 @@ class TrinoStorage:
         return self.__iceberg_catalog
 
     def _execute(self, sql: str) -> list[dict]:
-        from steve_cli.auth import get_token
         trace = os.getenv("STEVE_TRINO_TRACE") == "1"
         headers = {
             "X-Trino-User": self.user,
             "X-Trino-Catalog": self.catalog,
             "X-Trino-Schema": self.schema,
         }
-        token = get_token(self._workspace_id)
+        token = self._auth.get_token()
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
