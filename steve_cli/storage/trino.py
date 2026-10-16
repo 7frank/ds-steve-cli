@@ -407,15 +407,28 @@ class TrinoStorage:
                 io_props = getattr(iceberg_table.io, "properties", {})
                 access_key = io_props.get("s3.access-key-id", "n/a")
                 session_tok = io_props.get("s3.session-token", None)
+                # Decode JWT payload (no key needed) to see embedded session policy
+                session_policy_decoded = "none"
+                if session_tok:
+                    try:
+                        import base64 as _b64, json as _json
+                        parts = session_tok.split(".")
+                        if len(parts) >= 2:
+                            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+                            payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+                            sp = payload.get("sessionPolicy", payload.get("Policy", payload))
+                            session_policy_decoded = _json.dumps(sp)
+                    except Exception as _e:
+                        session_policy_decoded = f"decode-error:{_e}"
                 logger.warning(
                     "[trino] append: table=%s, location=%s, s3.endpoint=%s, signer.uri=%s, "
-                    "s3.access-key-id=%s, s3.session-token=%s, auth=%s",
+                    "s3.access-key-id=%s, session_policy=%s, auth=%s",
                     table_id,
                     iceberg_table.location(),
                     io_props.get("s3.endpoint", "n/a"),
                     io_props.get("s3.signer.uri", "n/a"),
                     access_key,
-                    (session_tok[:16] + "...") if session_tok else "none",
+                    session_policy_decoded,
                     type(self._auth).__name__,
                 )
 
