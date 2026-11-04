@@ -166,9 +166,34 @@ class PolicyClient:
         if not path.exists():
             raise FileNotFoundError(f"Policies file not found: {path}")
 
+        import warnings
         import yaml
         config: dict[str, Any] = yaml.safe_load(path.read_text())
-        workspace = config["workspace"]
+        workspace_yaml = config.get("workspace")
+        workspace_env = os.environ.get("WORKSPACE_NAME")
+
+        if workspace_env and workspace_yaml and workspace_env != workspace_yaml:
+            warnings.warn(
+                f"WORKSPACE_NAME env ({workspace_env!r}) overrides workspace in access.yaml "
+                f"({workspace_yaml!r}). The 'workspace:' field in access.yaml can be removed "
+                f"when WORKSPACE_NAME is set by the environment.",
+                stacklevel=2,
+            )
+            workspace = workspace_env
+        elif workspace_env:
+            workspace = workspace_env
+        elif workspace_yaml:
+            warnings.warn(
+                f"WORKSPACE_NAME env not set; using workspace from access.yaml ({workspace_yaml!r}). "
+                f"Set WORKSPACE_NAME in the environment for reliable catalog resolution.",
+                stacklevel=2,
+            )
+            workspace = workspace_yaml
+        else:
+            raise ValueError(
+                "Workspace name not found: set WORKSPACE_NAME env or add 'workspace:' to access.yaml"
+            )
+
         pdp_cfg = config["pdp"]
         rules = config.get("rules", [])
 
