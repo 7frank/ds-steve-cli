@@ -1233,6 +1233,7 @@ def policies_policy_rm(pdp_name: str | None, yes: bool):
 
 
 @main.command("login")
+@click.argument("workspace_name_arg", required=False, default=None, metavar="WORKSPACE_NAME")
 @click.option("--token", default=None, help="Service principal token (stp_...) to save")
 @click.option("--workspace", "workspace_id", default=None, help="Workspace ID (defaults to WORKSPACE_ID from .env)")
 @click.option("--url", "base_url", default=None, help="Platform root host, e.g. jds-dev.internal.jambit.io")
@@ -1240,14 +1241,14 @@ def policies_policy_rm(pdp_name: str | None, yes: bool):
 @click.option("--expires", "expires_at", default=None, help="Token expiry date/time (e.g. 2026-12-31 or ISO 8601). Informational only.")
 @click.option('--env-file', '-e', type=click.Path(path_type=Path), multiple=True,
               help='Path to .env file(s). Defaults to .env and .workspaces.env')
-def login(token: str | None, workspace_id: str | None, base_url: str | None, workspace_name_opt: str | None, expires_at: str | None, env_file: tuple):
+def login(workspace_name_arg: str | None, token: str | None, workspace_id: str | None, base_url: str | None, workspace_name_opt: str | None, expires_at: str | None, env_file: tuple):
     """Print CLI access URLs or save a service principal token."""
     cwd = Path.cwd()
     env_files = [Path(f) for f in env_file] if env_file else [cwd / ".env", cwd / ".workspaces.env"]
     for ef in env_files:
         load_dotenv(ef)
 
-    resolved_workspace = workspace_id or os.getenv("WORKSPACE_ID")
+    resolved_workspace = workspace_id or os.getenv("WORKSPACE_ID") or workspace_name_arg
     workspace_name = workspace_name_opt or os.getenv("WORKSPACE_NAME") or resolved_workspace
 
     if token:
