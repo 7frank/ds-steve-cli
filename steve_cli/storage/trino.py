@@ -562,7 +562,7 @@ class TrinoStorage:
 
             try:
                 iceberg_table = catalog.create_table(table_id, schema=iceberg_schema,
-                                                     properties=cow_props or None)
+                                                     properties=cow_props)
             except SignError as exc:
                 raise OSError(
                     f"TrinoStorage: Lakekeeper refused to sign table creation for '{table_id}' "
