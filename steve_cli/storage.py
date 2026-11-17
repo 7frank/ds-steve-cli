@@ -12,9 +12,11 @@ class Storage(Protocol):
     .. deprecated::
         Use ``steve_cli.storage.protocol.Storage`` instead.
     """
-    def put_file(self, local_path: str, path: str) -> None: ...
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None: ...
     def get_file(self, path: str, local_path: str) -> None: ...
-    def put_bytes(self, data: bytes, path: str) -> None: ...
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None: ...
     def get_bytes(self, path: str) -> bytes: ...
     def list(self, prefix: str = "") -> List[str]: ...
 
@@ -77,7 +79,10 @@ class S3Storage:
         key = self._key(path)
         return f"{self.endpoint}/{self.bucket}/{key}"
 
-    def put_file(self, local_path: str, path: str) -> None:
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("S3Storage does not support upsert — S3 objects have no row identity")
         absolute_url = self._get_absolute_url(path)
         try:
             self.client.upload_file(local_path, self.bucket, self._key(path))
@@ -114,7 +119,10 @@ class S3Storage:
                 print(f"❌ Storage error when reading: {path}: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def put_bytes(self, data: bytes, path: str) -> None:
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("S3Storage does not support upsert — S3 objects have no row identity")
         absolute_url = self._get_absolute_url(path)
         try:
             self.client.put_object(

@@ -113,7 +113,10 @@ class S3Storage:
                 f"S3Storage: {operation} failed — {code} [s3://{self.bucket}/{key} at {self.endpoint}]"
             )
 
-    def put_file(self, local_path: str, path: str) -> None:
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("S3Storage does not support upsert — S3 objects have no row identity")
         try:
             self.client.upload_file(local_path, self.bucket, self._key(path))
             logger.info("Uploaded %s", self._object_location(path))
@@ -132,7 +135,10 @@ class S3Storage:
         except ClientError as e:
             self._handle_client_error(e, path, "downloading")
 
-    def put_bytes(self, data: bytes, path: str) -> None:
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("S3Storage does not support upsert — S3 objects have no row identity")
         try:
             self.client.put_object(Bucket=self.bucket, Key=self._key(path), Body=data)
             logger.info("Stored %s", self._object_location(path))

@@ -189,7 +189,10 @@ class LakekeeperStorage:
         clean = str(PurePosixPath(path).as_posix().lstrip("/"))
         return f"{location}/{clean}"
 
-    def put_bytes(self, data: bytes, path: str) -> None:
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("LakekeeperStorage does not support upsert — use TrinoStorage for Iceberg upserts")
         io, loc = self._vend()
         with io.new_output(self._full_path(loc, path)).create(overwrite=True) as f:
             f.write(data)
@@ -200,7 +203,10 @@ class LakekeeperStorage:
         with io.new_input(self._full_path(loc, path)).open() as f:
             return f.read()
 
-    def put_file(self, local_path: str, path: str) -> None:
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None:
+        if mode == "upsert":
+            raise NotImplementedError("LakekeeperStorage does not support upsert — use TrinoStorage for Iceberg upserts")
         io, loc = self._vend()
         data = Path(local_path).read_bytes()
         with io.new_output(self._full_path(loc, path)).create(overwrite=True) as f:

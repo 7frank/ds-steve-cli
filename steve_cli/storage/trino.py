@@ -392,13 +392,18 @@ class TrinoStorage:
         except Exception as exc:
             logger.warning("Could not ensure Trino schema %s.%s: %s", self.catalog, self.schema, exc)
 
-    def put_bytes(self, data: bytes, path: str) -> None:
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None:
         from pyiceberg.exceptions import NoSuchTableError, SignError
 
         arrow_table = pq.read_table(io.BytesIO(data))
         table_id = f"{self.schema}.{self._table_name(path)}"
         catalog = self._iceberg_catalog
         lakekeeper_base = self._lakekeeper_base
+        join_cols = ([key] if isinstance(key, str) else list(key)) if key else []
+
+        if mode == "upsert" and not join_cols:
+            raise ValueError("put_bytes(mode='upsert') requires key= to be set")
 
         self._ensure_namespace()
 
@@ -501,7 +506,12 @@ class TrinoStorage:
 
         try:
             iceberg_table = catalog.load_table(table_id)
-            _append(iceberg_table, arrow_table, table_id)
+            if mode == "replace":
+                iceberg_table.overwrite(arrow_table)
+            elif mode == "upsert":
+                iceberg_table.upsert(df=arrow_table, join_cols=join_cols)
+            else:
+                _append(iceberg_table, arrow_table, table_id)
         except NoSuchTableError:
             from pyiceberg.schema import Schema
             from pyiceberg.types import (
@@ -537,9 +547,22 @@ class TrinoStorage:
                 iceberg_type = _PYARROW_TO_ICEBERG.get(field.type, StringType())
                 fields.append(NestedField(field_id=i + 1, name=field.name, field_type=iceberg_type, required=not field.nullable))
 
-            iceberg_schema = Schema(*fields)
+            key_names = set(join_cols)
+            identifier_ids = [f.field_id for f in fields if f.name in key_names]
+            iceberg_schema = Schema(*fields, identifier_field_ids=identifier_ids)
+
+            cow_props: dict[str, str] = {}
+            if mode == "upsert":
+                cow_props = {
+                    "format-version": "2",
+                    "write.update.mode": "copy-on-write",
+                    "write.delete.mode": "copy-on-write",
+                    "write.merge.mode": "copy-on-write",
+                }
+
             try:
-                iceberg_table = catalog.create_table(table_id, schema=iceberg_schema)
+                iceberg_table = catalog.create_table(table_id, schema=iceberg_schema,
+                                                     properties=cow_props or None)
             except SignError as exc:
                 raise OSError(
                     f"TrinoStorage: Lakekeeper refused to sign table creation for '{table_id}' "
@@ -558,6 +581,7 @@ class TrinoStorage:
                     f"TrinoStorage: create table '{table_id}' failed via Lakekeeper [{lakekeeper_base}] — "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
+            # first write on a new table: append is correct for all modes
             _append(iceberg_table, arrow_table, table_id)
 
         if os.getenv("STEVE_TRINO_TRACE") == "1":
@@ -574,5 +598,6 @@ class TrinoStorage:
             )
         logger.info("Written %d rows to %s", len(arrow_table), table_id)
 
-    def put_file(self, local_path: str, path: str) -> None:
-        self.put_bytes(Path(local_path).read_bytes(), path)
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None:
+        self.put_bytes(Path(local_path).read_bytes(), path, mode=mode, key=key)

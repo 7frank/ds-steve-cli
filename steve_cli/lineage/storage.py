@@ -71,16 +71,18 @@ class LineageStorage:
             return f"{s.endpoint.rstrip('/')}/{name}"
         return None
 
-    def put_file(self, local_path: str, path: str) -> None:
-        self._storage.put_file(local_path, path)
+    def put_file(self, local_path: str, path: str, mode: str = "append",
+                 key: str | list[str] | None = None) -> None:
+        self._storage.put_file(local_path, path, mode=mode, key=key)
         self._session.record_write(path, namespace=self._dataset_namespace)
 
     def get_file(self, path: str, local_path: str) -> None:
         self._storage.get_file(path, local_path)
         self._session.record_read(path, namespace=self._dataset_namespace)
 
-    def put_bytes(self, data: bytes, path: str) -> None:
-        self._storage.put_bytes(data, path)
+    def put_bytes(self, data: bytes, path: str, mode: str = "append",
+                  key: str | list[str] | None = None) -> None:
+        self._storage.put_bytes(data, path, mode=mode, key=key)
         facets = _extract_facets(data, path)
         self._session.record_write(path, facets or None, namespace=self._dataset_namespace)
 
@@ -93,8 +95,9 @@ class LineageStorage:
     def read(self, path: str) -> DatasetHandle:
         return DatasetHandle(path, self.get_bytes(path), self._session, is_read=True)
 
-    def write(self, path: str, data: bytes) -> DatasetHandle:
-        self.put_bytes(data, path)
+    def write(self, path: str, data: bytes, mode: str = "append",
+              key: str | list[str] | None = None) -> DatasetHandle:
+        self.put_bytes(data, path, mode=mode, key=key)
         return DatasetHandle(path, data, self._session)
 
     def read_df(self, path: str, parser: Callable, validator: Any = None) -> Any:
@@ -118,20 +121,23 @@ class LineageStorage:
         import polars as pl
         return self.read_df(path, lambda b: pl.read_excel(b, **kwargs), validator)
 
-    def write_df(self, path: str, df: Any, serializer: Callable) -> DatasetHandle:
+    def write_df(self, path: str, df: Any, serializer: Callable, mode: str = "append",
+                 key: str | list[str] | None = None) -> DatasetHandle:
         data = serializer(df)
-        self.put_bytes(data, path)
+        self.put_bytes(data, path, mode=mode, key=key)
         return DatasetHandle(path, data, self._session)
 
-    def write_csv(self, path: str, df: Any, **kwargs: Any) -> DatasetHandle:
-        return self.write_df(path, df, lambda d: d.write_csv(**kwargs).encode())
+    def write_csv(self, path: str, df: Any, mode: str = "append",
+                  key: str | list[str] | None = None, **kwargs: Any) -> DatasetHandle:
+        return self.write_df(path, df, lambda d: d.write_csv(**kwargs).encode(), mode=mode, key=key)
 
-    def write_parquet(self, path: str, df: Any, **kwargs: Any) -> DatasetHandle:
+    def write_parquet(self, path: str, df: Any, mode: str = "append",
+                      key: str | list[str] | None = None, **kwargs: Any) -> DatasetHandle:
         def _to_bytes(d: Any) -> bytes:
             buf = BytesIO()
             d.write_parquet(buf, **kwargs)
             return buf.getvalue()
-        return self.write_df(path, df, _to_bytes)
+        return self.write_df(path, df, _to_bytes, mode=mode, key=key)
 
     def attach_facets(self, path: str, facets: dict) -> None:
         self._session.attach_facets(path, facets)
