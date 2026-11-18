@@ -13,21 +13,49 @@ def _vkg_url(ctx_url: str | None) -> str:
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
     if ctx_url is None:
-        ctx_url = os.getenv("VKG_CONTROL_PLANE_URL", os.getenv("ONTOP_SIDECAR_URL", "http://localhost:18081"))
+        ctx_url = (
+            os.getenv("VKG_CONTROL_PLANE_URL")
+            or os.getenv("ONTOP_SIDECAR_URL")
+            or _resolve_vkg_service_url()
+            or "http://localhost:18081"
+        )
     return ctx_url.rstrip("/")
 
 
-def _get(url: str, **kwargs) -> requests.Response:
+def _resolve_vkg_service_url() -> str | None:
     try:
-        return requests.get(url, timeout=10, **kwargs)
+        from steve_cli.auth import get_service_url
+        return get_service_url("vkg", os.getenv("WORKSPACE_ID"))
+    except Exception:
+        return None
+
+
+def _vkg_token() -> str:
+    """Return the workspace STP token for VKG control plane requests through the auth proxy."""
+    try:
+        from steve_cli.auth import get_token
+        return get_token(os.getenv("WORKSPACE_ID")) or ""
+    except Exception:
+        return ""
+
+
+def _get(url: str, token: str = "", **kwargs) -> requests.Response:
+    headers = kwargs.pop("headers", {})
+    if token:
+        headers.setdefault("Authorization", f"Bearer {token}")
+    try:
+        return requests.get(url, timeout=10, headers=headers, **kwargs)
     except requests.exceptions.ConnectionError:
         click.secho(f"Cannot reach VKG control plane at {url}", fg="red", err=True)
         sys.exit(1)
 
 
-def _post(url: str, **kwargs) -> requests.Response:
+def _post(url: str, token: str = "", **kwargs) -> requests.Response:
+    headers = kwargs.pop("headers", {})
+    if token:
+        headers.setdefault("Authorization", f"Bearer {token}")
     try:
-        return requests.post(url, timeout=30, **kwargs)
+        return requests.post(url, timeout=30, headers=headers, **kwargs)
     except requests.exceptions.ConnectionError:
         click.secho(f"Cannot reach VKG control plane at {url}", fg="red", err=True)
         sys.exit(1)
@@ -43,8 +71,12 @@ def _status_color(s: str) -> str:
 @click.pass_context
 def vkg(ctx: click.Context, vkg_url: str | None):
     """Manage VKG instances on the control plane."""
+    from dotenv import load_dotenv
+    load_dotenv(".env", override=False)
+    load_dotenv(".workspaces.env", override=False)
     ctx.ensure_object(dict)
     ctx.obj["url"] = vkg_url
+    ctx.obj["token"] = _vkg_token()
 
 
 @vkg.command("ls")
@@ -52,7 +84,7 @@ def vkg(ctx: click.Context, vkg_url: str | None):
 def ls_cmd(ctx: click.Context):
     """List all VKG instances and their status."""
     base = _vkg_url(ctx.obj["url"])
-    r = _get(f"{base}/vkg")
+    r = _get(f"{base}/vkg", token=ctx.obj["token"])
     r.raise_for_status()
     instances = r.json()
     if not instances:
@@ -76,7 +108,7 @@ def ls_cmd(ctx: click.Context):
 def status_cmd(ctx: click.Context, name: str):
     """Show detailed status of a VKG instance."""
     base = _vkg_url(ctx.obj["url"])
-    r = _get(f"{base}/vkg/{name}/status")
+    r = _get(f"{base}/vkg/{name}/status", token=ctx.obj["token"])
     if r.status_code == 404:
         click.secho(f"VKG '{name}' not found.", fg="red", err=True)
         sys.exit(1)
@@ -96,7 +128,7 @@ def status_cmd(ctx: click.Context, name: str):
 def start_cmd(ctx: click.Context, name: str):
     """Start a stopped VKG instance."""
     base = _vkg_url(ctx.obj["url"])
-    r = _post(f"{base}/vkg/{name}/start")
+    r = _post(f"{base}/vkg/{name}/start", token=ctx.obj["token"])
     if r.status_code == 404:
         click.secho(f"VKG '{name}' not found. Upload artifacts first.", fg="red", err=True)
         sys.exit(1)
@@ -111,7 +143,7 @@ def start_cmd(ctx: click.Context, name: str):
 def stop_cmd(ctx: click.Context, name: str):
     """Stop a running VKG instance."""
     base = _vkg_url(ctx.obj["url"])
-    r = _post(f"{base}/vkg/{name}/stop")
+    r = _post(f"{base}/vkg/{name}/stop", token=ctx.obj["token"])
     if r.status_code == 404:
         click.secho(f"VKG '{name}' not found.", fg="red", err=True)
         sys.exit(1)
@@ -129,6 +161,7 @@ def sparql_cmd(ctx: click.Context, name: str, query: str, fmt: str):
     base = _vkg_url(ctx.obj["url"])
     r = _get(
         f"{base}/vkg/{name}/sparql",
+        token=ctx.obj["token"],
         params={"query": query},
         headers={"Accept": "application/sparql-results+json"},
     )
@@ -164,7 +197,7 @@ def sparql_cmd(ctx: click.Context, name: str, query: str, fmt: str):
 def logs_cmd(ctx: click.Context, name: str, lines: int):
     """Show Ontop process logs for a named VKG instance."""
     base = _vkg_url(ctx.obj["url"])
-    r = _get(f"{base}/vkg/{name}/logs", params={"lines": lines})
+    r = _get(f"{base}/vkg/{name}/logs", token=ctx.obj["token"], params={"lines": lines})
     if r.status_code == 404:
         click.secho(r.json().get("detail", f"VKG '{name}' not found."), fg="red", err=True)
         sys.exit(1)
