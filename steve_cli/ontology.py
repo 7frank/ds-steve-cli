@@ -45,6 +45,31 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _resolve_registry_url(registry_url: str | None) -> str:
+    """Resolve the registry URL from explicit arg → credentials file → localhost fallback."""
+    if registry_url:
+        return registry_url
+    from steve_cli.auth import get_service_url
+    return get_service_url("registry", os.getenv("WORKSPACE_ID")) or "http://localhost:8765"
+
+
+def _resolve_registry_token(workspace_id: str | None = None) -> str:
+    """Return the best auth token for registry requests.
+
+    REGISTRY_TOKEN env var (pre-issued direct token) takes precedence; otherwise use
+    the workspace STP token so requests pass through the auth proxy correctly.
+    The auth proxy's RegistryAuthenticator then mints a fresh registry JWT for the backend.
+    """
+    explicit = os.getenv("REGISTRY_TOKEN", "")
+    if explicit:
+        return explicit
+    try:
+        from steve_cli.auth import get_token
+        return get_token(workspace_id or os.getenv("WORKSPACE_ID")) or ""
+    except Exception:
+        return _get_token()
+
+
 def _infer_type(data: dict) -> str:
     if "ontology_package" in data and ("entities" in data or "relations" in data):
         return "binding"
@@ -221,15 +246,17 @@ def schema_cmd(output_dir: Path | None):
 
 @ontology.command("ls")
 @click.argument("query", default="", required=False)
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
 @click.option("--no-bindings", "show_bindings", is_flag=True, default=True, flag_value=False, help="Hide bindings section")
-def ls_cmd(query: str, registry_url: str, show_bindings: bool):
+def ls_cmd(query: str, registry_url: str | None, show_bindings: bool):
     """List ontology packages (and bindings) in the registry."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+    registry_url = _resolve_registry_url(registry_url)
+    token = _resolve_registry_token()
 
-    r = requests.get(f"{registry_url}/api/v1/search", params={"q": query, "limit": 100}, timeout=15)
+    r = requests.get(f"{registry_url}/api/v1/search", params={"q": query, "limit": 100}, headers=_headers(token), timeout=15)
     if r.status_code != 200:
         click.secho(f"Registry error: {r.status_code} {r.text[:200]}", fg="red", err=True)
         sys.exit(1)
@@ -246,7 +273,7 @@ def ls_cmd(query: str, registry_url: str, show_bindings: bool):
         click.secho("  (none)", dim=True)
 
     if show_bindings:
-        rb = requests.get(f"{registry_url}/api/v1/bindings", timeout=15)
+        rb = requests.get(f"{registry_url}/api/v1/bindings", headers=_headers(token), timeout=15)
         bindings = rb.json() if rb.status_code == 200 else []
         if query:
             bindings = [b for b in bindings if query.lower() in b.get("uri", "").lower()]
@@ -263,12 +290,13 @@ def ls_cmd(query: str, registry_url: str, show_bindings: bool):
 @ontology.command("add")
 @click.argument("uri")
 @click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to update")
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-def add_cmd(uri: str, manifest_file: str, registry_url: str):
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
+def add_cmd(uri: str, manifest_file: str, registry_url: str | None):
     """Add a remote dependency and download it into vkg_modules/ (like npm install <pkg>)."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+    registry_url = _resolve_registry_url(registry_url)
 
     if "@" in uri.replace("dp://", "", 1):
         at_idx = uri.index("@", uri.index("://") + 3)
@@ -278,7 +306,7 @@ def add_cmd(uri: str, manifest_file: str, registry_url: str):
         base_uri = uri
         pinned_version = None
 
-    token = _get_token()
+    token = _resolve_registry_token()
 
     if pinned_version is None:
         path_part = base_uri.replace("dp://", "")
@@ -378,13 +406,14 @@ def _install_deps(manifest: dict, cwd: Path, registry_url: str, token: str, forc
 
 @ontology.command("install")
 @click.option("-f", "--file", "manifest_file", default="ontology.yaml", show_default=True, help="Manifest file to read")
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
 @click.option("--force", is_flag=True, default=False, help="Re-download even if already present")
-def install_cmd(manifest_file: str, registry_url: str, force: bool):
+def install_cmd(manifest_file: str, registry_url: str | None, force: bool):
     """Download all transitive import dependencies into vkg_modules/ (like npm install)."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+    registry_url = _resolve_registry_url(registry_url)
 
     cwd = Path.cwd()
     manifest_path = cwd / manifest_file
@@ -392,7 +421,7 @@ def install_cmd(manifest_file: str, registry_url: str, force: bool):
         click.secho(f"Manifest not found: {manifest_file}", fg="red", err=True)
         sys.exit(1)
     manifest = yaml.safe_load(manifest_path.read_text()) or {}
-    token = _get_token()
+    token = _resolve_registry_token()
     click.echo(f"Installing dependencies from {manifest_file} …")
     written = _install_deps(manifest, cwd, registry_url, token, force=force)
     click.secho(f"✓ {written} package(s) installed into vkg_modules/", fg="green")
@@ -464,14 +493,15 @@ def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path | No
 
 @ontology.command("register")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
-def register_cmd(file: Path, registry_url: str):
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
+def register_cmd(file: Path, registry_url: str | None):
     """Register a concept package or binding YAML with the registry."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+    registry_url = _resolve_registry_url(registry_url)
 
-    token = _get_token()
+    token = _resolve_registry_token()
     data = yaml.safe_load(file.read_text())
     kind = _infer_type(data)
 
@@ -494,15 +524,16 @@ def register_cmd(file: Path, registry_url: str):
 @click.option("--root", required=True, help="Root concept package URI, e.g. dp://o/acme/concepts/order/core")
 @click.option("--binding", required=True, help="Binding package URI, e.g. dp://o/acme/bindings/order/iceberg")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Write artifacts to this directory")
-def compile_cmd(root: str, binding: str, base_prefix: str | None, registry_url: str, output_dir: Path | None):
+def compile_cmd(root: str, binding: str, base_prefix: str | None, registry_url: str | None, output_dir: Path | None):
     """Compile VKG artifacts from registered packages."""
     from dotenv import load_dotenv
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
+    registry_url = _resolve_registry_url(registry_url)
 
-    token = _get_token()
+    token = _resolve_registry_token()
     click.echo(f"Compiling {root} × {binding} …")
     artifact = _compile(root, binding, base_prefix, registry_url, token)
 
@@ -1524,7 +1555,7 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
 @click.option("--root", default=None, help="Root concept package URI (overrides manifest)")
 @click.option("--binding", default=None, help="Binding package URI (overrides manifest)")
 @click.option("--base-prefix", default=None, help="Override IRI namespace for generated properties")
-@click.option("--registry-url", envvar="REGISTRY_URL", default="http://localhost:8765", show_default=True)
+@click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
 @click.option("--vkg-url", envvar="VKG_CONTROL_PLANE_URL", default=None, show_default=True)
 @click.option("--name", "vkg_name", default="default", show_default=True, help="Named VKG slot on the control plane")
 @click.option("--frozen", is_flag=True, default=False, help="Fail if lock file is absent or stale (like npm ci)")
@@ -1533,7 +1564,7 @@ def push_cmd(
     root: str | None,
     binding: str | None,
     base_prefix: str | None,
-    registry_url: str,
+    registry_url: str | None,
     vkg_url: str | None,
     vkg_name: str,
     frozen: bool,
@@ -1545,6 +1576,7 @@ def push_cmd(
 
     from steve_cli.auth import get_service_url, get_token as _get_workspace_token
     workspace_id = os.getenv("WORKSPACE_ID")
+    registry_url = _resolve_registry_url(registry_url)
     if vkg_url is None:
         vkg_url = (
             os.getenv("VKG_CONTROL_PLANE_URL")
@@ -1553,8 +1585,8 @@ def push_cmd(
             or "http://localhost:18081"
         )
 
-    token = _get_token()          # registry JWT — for _compile() calls
-    vkg_token = _get_workspace_token(workspace_id)  # STP token for this workspace
+    token = _resolve_registry_token(workspace_id)   # for _compile() registry calls
+    vkg_token = _get_workspace_token(workspace_id)  # STP token for VKG push
     cwd = Path.cwd()
 
     if root and binding:
