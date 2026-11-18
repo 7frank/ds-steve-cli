@@ -518,6 +518,23 @@ def build_cmd(manifest_file: str, base_prefix: str | None, output_dir: Path | No
     click.secho(f"  Artifacts written to {output_dir}/", fg="cyan")
 
 
+def _register_file(file: Path, registry_url: str, token: str) -> None:
+    data = yaml.safe_load(file.read_text())
+    kind = _infer_type(data)
+    if kind == "binding":
+        endpoint = f"{registry_url}/api/v1/bindings"
+        payload = {"binding": data}
+    else:
+        endpoint = f"{registry_url}/api/v1/register"
+        payload = {"product": data}
+    r = requests.post(endpoint, json=payload, headers=_headers(token), timeout=30)
+    if r.status_code == 200:
+        click.secho(f"  ✓ Registered {kind}: {data.get('uri')}", fg="green", dim=True)
+    else:
+        click.secho(f"  ✗ Register failed ({r.status_code}): {r.text[:300]}", fg="red", err=True)
+        sys.exit(1)
+
+
 @ontology.command("register")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--registry-url", envvar="REGISTRY_URL", default=None, show_default=True)
@@ -527,24 +544,8 @@ def register_cmd(file: Path, registry_url: str | None):
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
     registry_url = _resolve_registry_url(registry_url)
-
     token = _resolve_registry_token()
-    data = yaml.safe_load(file.read_text())
-    kind = _infer_type(data)
-
-    if kind == "binding":
-        endpoint = f"{registry_url}/api/v1/bindings"
-        payload = {"binding": data}
-    else:
-        endpoint = f"{registry_url}/api/v1/register"
-        payload = {"product": data}
-
-    r = requests.post(endpoint, json=payload, headers=_headers(token), timeout=30)
-    if r.status_code == 200:
-        click.secho(f"✓ Registered {kind}: {data.get('uri')}", fg="green")
-    else:
-        click.secho(f"✗ Failed ({r.status_code}): {r.text[:300]}", fg="red", err=True)
-        sys.exit(1)
+    _register_file(file, registry_url, token)
 
 
 @ontology.command("compile")
@@ -881,7 +882,7 @@ def _compile_local(manifest: dict, cwd: Path) -> tuple[dict, list[str]]:
     trino_host = source.get("trino_host", "trino")
     trino_port = source.get("trino_port", 8080)
     catalog = source.get("catalog", "")
-    schema = source.get("schema", "")
+    schema = source.get("schema", "") or _derive_schema()
     workspace_name = os.getenv("WORKSPACE_NAME", "")
     jdbc_user = workspace_name or (catalog.rsplit("-", 1)[0] if catalog else "trino")
     if catalog and schema:
@@ -1601,6 +1602,7 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
 @click.option("--vkg-url", envvar="VKG_CONTROL_PLANE_URL", default=None, show_default=True)
 @click.option("--name", "vkg_name", default="default", show_default=True, help="Named VKG slot on the control plane")
 @click.option("--frozen", is_flag=True, default=False, help="Fail if lock file is absent or stale (like npm ci)")
+@click.option("--register", "do_register", is_flag=True, default=False, help="Also register local packages/bindings in the registry before pushing")
 def push_cmd(
     manifest_file: str | None,
     root: str | None,
@@ -1610,6 +1612,7 @@ def push_cmd(
     vkg_url: str | None,
     vkg_name: str,
     frozen: bool,
+    do_register: bool,
 ):
     """Compile VKG artifacts and push them to the VKG control plane."""
     from dotenv import load_dotenv
@@ -1654,6 +1657,13 @@ def push_cmd(
                 sys.exit(1)
             click.secho("✓ Lock is current (--frozen)", fg="green")
             return
+
+        if do_register:
+            pkgs = manifest.get("packages", []) + manifest.get("bindings", [])
+            if pkgs:
+                click.echo(f"Registering {len(pkgs)} package(s) …")
+            for path in pkgs:
+                _register_file(cwd / path, registry_url, token)
 
         trino_endpoint = get_service_url("trino", os.getenv("WORKSPACE_ID"))
         click.echo(f"Pushing workspace from {chosen} …")
