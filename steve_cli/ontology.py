@@ -912,8 +912,22 @@ def _workspace_push(
     return r.json(), tables
 
 
-def _capture_snapshots(tables: list[str], trino_endpoint: str) -> dict:
+def _capture_snapshots(tables: list[str], trino_endpoint: str, token: str = "") -> dict:
     import time
+    from urllib.parse import urlparse, urlunparse
+
+    # Trino returns nextUri with its own scheme/host; rewrite to the proxy's scheme+host
+    # so that pagination follows the same path as the initial request.
+    proxy = urlparse(trino_endpoint.rstrip("/"))
+
+    def _rewrite_uri(uri: str) -> str:
+        parsed = urlparse(uri)
+        return urlunparse((proxy.scheme, proxy.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+    headers: dict = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     snapshots: dict[str, int] = {}
     for fqt in tables:
         parts = fqt.split(".")
@@ -922,12 +936,7 @@ def _capture_snapshots(tables: list[str], trino_endpoint: str) -> dict:
         catalog, schema, table = parts
         query = f'SELECT snapshot_id FROM {catalog}.{schema}."{table}$snapshots" ORDER BY committed_at DESC LIMIT 1'
         try:
-            r = requests.post(
-                f"{trino_endpoint}/v1/statement",
-                data=query,
-                headers={"X-Trino-User": "steve-cli"},
-                timeout=15,
-            )
+            r = requests.post(f"{trino_endpoint}/v1/statement", data=query, headers=headers, timeout=15)
             r.raise_for_status()
             body = r.json()
             rows: list = []
@@ -937,7 +946,7 @@ def _capture_snapshots(tables: list[str], trino_endpoint: str) -> dict:
                 if not next_uri:
                     break
                 time.sleep(0.2)
-                body = requests.get(next_uri, timeout=15).json()
+                body = requests.get(_rewrite_uri(next_uri), headers=headers, timeout=15).json()
             rows.extend(body.get("data") or [])
             if rows:
                 snapshots[fqt] = rows[0][0]
@@ -1616,7 +1625,7 @@ def push_cmd(
         trino_endpoint = get_service_url("trino", os.getenv("WORKSPACE_ID"))
         click.echo(f"Pushing workspace from {chosen} …")
         artifact, tables = _compile_local(manifest, cwd)
-        snapshots = _capture_snapshots(tables, trino_endpoint) if trino_endpoint and tables else {}
+        snapshots = _capture_snapshots(tables, trino_endpoint, token=vkg_token) if trino_endpoint and tables else {}
         if snapshots:
             click.secho(f"  Captured {len(snapshots)} Iceberg snapshot(s)", dim=True)
         _write_lock(artifact, manifest, lock_path, snapshots or None)
