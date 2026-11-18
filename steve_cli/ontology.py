@@ -814,11 +814,32 @@ def _compile_local(manifest: dict, cwd: Path) -> tuple[dict, list[str]]:
     manifest_data = _vkg_generate_manifest(closure, binding_data)
     tables = [e["table"] for e in binding_data.get("entities", [])]
 
+    source = binding_data.get("source", {})
+    trino_host = source.get("trino_host", "trino")
+    trino_port = source.get("trino_port", 8080)
+    catalog = source.get("catalog", "")
+    schema = source.get("schema", "")
+    workspace_name = os.getenv("WORKSPACE_NAME", "")
+    jdbc_user = workspace_name or (catalog.rsplit("-", 1)[0] if catalog else "trino")
+    if catalog and schema:
+        jdbc_url = f"jdbc:trino://{trino_host}:{trino_port}/{catalog}/{schema}"
+    elif catalog:
+        jdbc_url = f"jdbc:trino://{trino_host}:{trino_port}/{catalog}"
+    else:
+        jdbc_url = f"jdbc:trino://{trino_host}:{trino_port}"
+    ontop_properties = (
+        f"jdbc.url={jdbc_url}\n"
+        "jdbc.driver=io.trino.jdbc.TrinoDriver\n"
+        f"jdbc.user={jdbc_user}\n"
+        "jdbc.password=\n"
+    )
+
     artifact = {
         "ontology_ttl": ontology_ttl,
         "mappings_obda": mappings_obda,
         "prefixes_properties": prefixes_properties,
         "manifest": manifest_data,
+        "ontop_properties": ontop_properties,
     }
     return artifact, tables
 
@@ -1450,7 +1471,7 @@ def _write_local_packages(manifest: dict, cwd: Path) -> None:
         shutil.copy2(full, dest / full.name)
 
 
-def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default", output_dir: Path | None = None) -> None:
+def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "default", output_dir: Path | None = None, token: str | None = None) -> None:
     click.echo(f"Uploading VKG artifacts to VKG control plane (slot: {name}) …")
     sparql_url = sidecar_url.rstrip("/") + f"/vkg/{name}/sparql"
     void_ttl: str | None = None
@@ -1468,6 +1489,7 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
         examples_file = output_dir / "examples.ttl"
         if examples_file.exists():
             examples_ttl = examples_file.read_text()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     payload = {
         "ontology_ttl": artifact["ontology_ttl"],
         "mappings_obda": artifact["mappings_obda"],
@@ -1476,14 +1498,16 @@ def _push_to_ontop_sidecar(artifact: dict, sidecar_url: str, name: str = "defaul
         "void_ttl": void_ttl,
         "examples_ttl": examples_ttl,
     }
+    if artifact.get("ontop_properties"):
+        payload["ontop_properties"] = artifact["ontop_properties"]
     if name == "default":
-        r = requests.post(f"{sidecar_url}/upload", json=payload, timeout=180)
+        r = requests.post(f"{sidecar_url}/upload", json=payload, headers=headers, timeout=180)
     else:
-        r = requests.post(f"{sidecar_url}/vkg/{name}/upload", json=payload, timeout=30)
+        r = requests.post(f"{sidecar_url}/vkg/{name}/upload", json=payload, headers=headers, timeout=30)
         if r.status_code not in (200, 201):
             click.secho(f"Upload failed: {r.status_code} {r.text[:400]}", fg="red", err=True)
             sys.exit(1)
-        r2 = requests.post(f"{sidecar_url}/vkg/{name}/start", timeout=180)
+        r2 = requests.post(f"{sidecar_url}/vkg/{name}/start", headers=headers, timeout=180)
         if r2.status_code not in (200, 201):
             click.secho(f"Start failed: {r2.status_code} {r2.text[:400]}", fg="red", err=True)
             sys.exit(1)
@@ -1519,10 +1543,18 @@ def push_cmd(
     load_dotenv(".env", override=False)
     load_dotenv(".workspaces.env", override=False)
 
+    from steve_cli.auth import get_service_url, get_token as _get_workspace_token
+    workspace_id = os.getenv("WORKSPACE_ID")
     if vkg_url is None:
-        vkg_url = os.getenv("VKG_CONTROL_PLANE_URL", os.getenv("ONTOP_SIDECAR_URL", "http://localhost:18081"))
+        vkg_url = (
+            os.getenv("VKG_CONTROL_PLANE_URL")
+            or os.getenv("ONTOP_SIDECAR_URL")
+            or get_service_url("vkg", workspace_id)
+            or "http://localhost:18081"
+        )
 
-    token = _get_token()
+    token = _get_token()          # registry JWT — for _compile() calls
+    vkg_token = _get_workspace_token(workspace_id)  # STP token for this workspace
     cwd = Path.cwd()
 
     if root and binding:
@@ -1549,7 +1581,6 @@ def push_cmd(
             click.secho("✓ Lock is current (--frozen)", fg="green")
             return
 
-        from steve_cli.auth import get_service_url
         trino_endpoint = get_service_url("trino", os.getenv("WORKSPACE_ID"))
         click.echo(f"Pushing workspace from {chosen} …")
         artifact, tables = _compile_local(manifest, cwd)
@@ -1570,7 +1601,7 @@ def push_cmd(
 
     chosen_stem = Path(manifest_file or "ontology").stem
     output_dir = cwd / "vkg_modules" / ".build" / chosen_stem
-    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name, output_dir=output_dir)
+    _push_to_ontop_sidecar(artifact, vkg_url, vkg_name, output_dir=output_dir, token=vkg_token)
 
 
 # ---------------------------------------------------------------------------
