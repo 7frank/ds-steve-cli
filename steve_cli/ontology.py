@@ -45,6 +45,33 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _derive_schema() -> str:
+    """Infer schema from current git branch name."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return "main"
+
+
+def _qualify_table(table: str, source: dict) -> str:
+    """Return a SQL-quoted FQT from a bare table name using source catalog/schema.
+
+    If the table value already contains a dot it is returned unchanged (backward compat).
+    """
+    import re
+    if "." in table:
+        return table
+    catalog = source.get("catalog", "")
+    schema = source.get("schema", "") or _derive_schema()
+    cat_quoted = f'"{catalog}"' if re.search(r"[^a-zA-Z0-9_]", catalog) else catalog
+    return f"{cat_quoted}.{schema}.{table}"
+
+
 def _resolve_registry_url(registry_url: str | None) -> str:
     """Resolve the registry URL from explicit arg → credentials file → localhost fallback."""
     if registry_url:
@@ -839,6 +866,11 @@ def _compile_local(manifest: dict, cwd: Path) -> tuple[dict, list[str]]:
         sys.exit(1)
     binding_data = yaml.safe_load(full.read_text()) or {}
 
+    # Qualify bare table names (e.g. "customers") → '"catalog".schema.customers'
+    _src = binding_data.get("source", {})
+    for _e in binding_data.get("entities", []):
+        _e["table"] = _qualify_table(_e["table"], _src)
+
     ontology_ttl = _vkg_generate_ontology(closure, base_prefix)
     mappings_obda = _vkg_generate_mappings(closure, binding_data, base_prefix)
     prefixes_properties = _vkg_generate_prefixes(closure, base_prefix)
@@ -892,9 +924,10 @@ def _workspace_push(
         content = full.read_text()
         package_files.append({"path": path, "content": content})
         data = yaml.safe_load(content)
+        _src = data.get("source", {})
         for entity in data.get("entities", []):
             if "table" in entity:
-                tables.append(entity["table"])
+                tables.append(_qualify_table(entity["table"], _src))
 
     payload = {
         "manifest": manifest,
@@ -1359,7 +1392,7 @@ def _generate_schemas(cwd: Path) -> dict:
                         },
                         "table": {
                             "type": "string",
-                            "description": "Fully qualified Trino table name: catalog.schema.table, e.g. minio.ws_orders_bronze.customers.",
+                            "description": "Table name. Bare names (e.g. `customers`) are auto-qualified from source.catalog/source.schema at compile time. Fully qualified names (e.g. `\"my-catalog\".schema.table`) are passed through unchanged.",
                         },
                         "id_column": {
                             "type": "string",
